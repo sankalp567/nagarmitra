@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Report": {
+      "title": "Report",
+      "description": "A civic issue reported in Gandhinagar containing photos, coordinates, AI summaries, automated complaints, and status timelines.",
+      "type": "object",
+      "properties": {
+        "photoUrl": { "type": "string" },
+        "geo": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "ward": { "type": "string" },
+            "wardName": { "type": "string" }
+          },
+          "required": ["lat", "lng", "ward", "wardName"]
+        },
+        "category": { "type": "string" },
+        "severity": { "type": "number", "minimum": 1, "maximum": 5 },
+        "aiAnalysis": {
+          "type": "object",
+          "properties": {
+            "description": { "type": "string" },
+            "hazards": { "type": "array", "items": { "type": "string" } },
+            "confidence": { "type": "number" }
+          },
+          "required": ["description", "hazards", "confidence"]
+        },
+        "department": { "type": "string" },
+        "officer": { "type": "string" },
+        "complaintEn": { "type": "string" },
+        "complaintHi": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "acknowledged", "escalated", "resolved"] },
+        "createdAt": { "type": "number" },
+        "lastEscalatedAt": { "type": "number" },
+        "coWitnesses": { "type": "array", "items": { "type": "string" } },
+        "embedding": { "type": "array", "items": { "type": "number" } },
+        "duplicateOf": { "type": "string" }
+      },
+      "required": ["photoUrl", "geo", "category", "severity", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Collection of all public civic issues reported in Gandhinagar."
+    }
+  }
+}

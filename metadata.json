@@ -1,0 +1,6 @@
+{
+  "name": "NagarMitra",
+  "description": "A civic-issue reporting platform for Gandhinagar, India, allowing users to report local issues, view live activity dashboards, and explore active concerns on a map.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

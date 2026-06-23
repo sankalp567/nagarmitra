@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isValidReport(data) {
+      return data.keys().hasAll(['photoUrl', 'geo', 'category', 'severity', 'status', 'createdAt'])
+        && data.photoUrl is string
+        && data.category is string
+        && data.severity >= 1 && data.severity <= 5
+        && data.status in ['open', 'acknowledged', 'escalated', 'resolved']
+        && data.createdAt is int;
+    }
+
+    match /reports/{reportId} {
+      // Anyone can read reports to render them on the map / explore dashboards
+      allow read: if true;
+      
+      // Creating a report is allowed if the user is authenticated (even anonymously) and data is structured properly
+      allow create: if request.auth != null && isValidReport(request.resource.data);
+      
+      // Updating active reports allows adding co-witnesses or status changes
+      allow update: if request.auth != null;
+      
+      // Deleting is disabled for civic trace integrity
+      allow delete: if false;
+    }
+  }
+}
