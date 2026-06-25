@@ -22,6 +22,61 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<string>('Connecting...');
+  const [previousView, setPreviousView] = useState<Screen | null>(null);
+
+  // Centralized navigation function to handle state updates and pushState
+  const navigateTo = (screen: Screen, reportId: string | null = null, pushHistory = true) => {
+    let prev = previousView;
+    if (screen === 'ticket-detail') {
+      if (currentScreen !== 'ticket-detail') {
+        prev = currentScreen;
+        setPreviousView(currentScreen);
+      }
+    } else {
+      prev = null;
+      setPreviousView(null);
+    }
+
+    setCurrentScreen(screen);
+    setSelectedReportId(reportId);
+
+    if (pushHistory) {
+      window.history.pushState({
+        screen,
+        selectedReportId: reportId,
+        previousView: prev
+      }, '', '');
+    }
+  };
+
+  // Synchronize browser back button PopState actions
+  useEffect(() => {
+    if (!window.history.state) {
+      window.history.replaceState({
+        screen: 'report',
+        selectedReportId: null,
+        previousView: null
+      }, '', '');
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      if (event.state) {
+        const { screen, selectedReportId: popId, previousView: popPrev } = event.state;
+        setCurrentScreen(screen || 'report');
+        setSelectedReportId(popId || null);
+        setPreviousView(popPrev || null);
+      } else {
+        setCurrentScreen('report');
+        setSelectedReportId(null);
+        setPreviousView(null);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
 
   // Load active reports and user authentication context on startup
   useEffect(() => {
@@ -48,7 +103,13 @@ export default function App() {
 
   // Update lists locally when reports are submitted or altered in child screens
   const handleReportCreated = (newReport: CivicReport) => {
-    setReports(prev => [newReport, ...prev]);
+    setReports(prev => {
+      const exists = prev.some(r => r.id === newReport.id);
+      if (exists) {
+        return prev.map(r => r.id === newReport.id ? newReport : r);
+      }
+      return [newReport, ...prev];
+    });
   };
 
   const handleUpdateStatus = (reportId: string, status: IssueStatus) => {
@@ -67,8 +128,16 @@ export default function App() {
 
   // Trigger Detail views from search click
   const handleNavigateToDetail = (reportId: string) => {
-    setSelectedReportId(reportId);
-    setCurrentScreen('ticket-detail');
+    navigateTo('ticket-detail', reportId);
+  };
+
+  const handleRefreshReports = async () => {
+    try {
+      const retrievedReports = await fetchReports();
+      setReports(retrievedReports);
+    } catch (error) {
+      console.error("Failed to refresh reports list:", error);
+    }
   };
 
   return (
@@ -79,7 +148,7 @@ export default function App() {
           
           {/* NagarMitra bilingual logo layout */}
           <div 
-            onClick={() => setCurrentScreen('report')} 
+            onClick={() => navigateTo('report')} 
             className="flex items-center gap-2.5 cursor-pointer select-none group"
           >
             {/* Indian national green & orange custom stylized roundel */}
@@ -102,10 +171,7 @@ export default function App() {
           {/* Navigation Bar Selector */}
           <nav className="hidden sm:flex items-center gap-1 bg-[#fafaf5] p-1 rounded-xl border border-[#e2e2d5]">
             <button
-              onClick={() => {
-                setCurrentScreen('report');
-                setSelectedReportId(null);
-              }}
+              onClick={() => navigateTo('report')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'report' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
             >
               <Plus className="w-3.5 h-3.5" />
@@ -113,10 +179,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => {
-                setCurrentScreen('map');
-                setSelectedReportId(null);
-              }}
+              onClick={() => navigateTo('map')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'map' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
             >
               <Map className="w-3.5 h-3.5" />
@@ -124,10 +187,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => {
-                setCurrentScreen('dashboard');
-                setSelectedReportId(null);
-              }}
+              onClick={() => navigateTo('dashboard')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'dashboard' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
             >
               <BarChart3 className="w-3.5 h-3.5" />
@@ -148,10 +208,7 @@ export default function App() {
         {/* Mobile Navigation tab overlays */}
         <div className="sm:hidden grid grid-cols-3 border-t border-[#e2e2d5] p-1 bg-[#fafaf5]/50">
           <button
-            onClick={() => {
-              setCurrentScreen('report');
-              setSelectedReportId(null);
-            }}
+            onClick={() => navigateTo('report')}
             className={`py-2 text-center text-xs font-bold transition flex flex-col items-center gap-0.5 ${currentScreen === 'report' ? 'text-[#3a5a40] border-b-2 border-[#3a5a40]' : 'text-[#8a8a7a]'}`}
           >
             <Plus className="w-4 h-4" />
@@ -159,10 +216,7 @@ export default function App() {
           </button>
           
           <button
-            onClick={() => {
-              setCurrentScreen('map');
-              setSelectedReportId(null);
-            }}
+            onClick={() => navigateTo('map')}
             className={`py-2 text-center text-xs font-bold transition flex flex-col items-center gap-0.5 ${currentScreen === 'map' ? 'text-[#3a5a40] border-b-2 border-[#3a5a40]' : 'text-[#8a8a7a]'}`}
           >
             <Map className="w-4 h-4" />
@@ -170,10 +224,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => {
-              setCurrentScreen('dashboard');
-              setSelectedReportId(null);
-            }}
+            onClick={() => navigateTo('dashboard')}
             className={`py-2 text-center text-xs font-bold transition flex flex-col items-center gap-0.5 ${currentScreen === 'dashboard' ? 'text-[#3a5a40] border-b-2 border-[#3a5a40]' : 'text-[#8a8a7a]'}`}
           >
             <BarChart3 className="w-4 h-4" />
@@ -217,16 +268,21 @@ export default function App() {
                 <Dashboard 
                   reports={reports} 
                   onSelectReport={handleNavigateToDetail}
+                  onRefreshReports={handleRefreshReports}
                 />
               )}
 
               {currentScreen === 'ticket-detail' && activeReport && (
                 <TicketDetail 
                   report={activeReport}
+                  previousView={previousView}
                   onBack={() => {
-                    // Navigate back to the previous layout reasonably
-                    setCurrentScreen(reports.some(r => r.id === activeReport.id && r.id.startsWith('rep_local_')) ? 'report' : 'map');
-                    setSelectedReportId(null);
+                    if (window.history.state && window.history.state.screen === 'ticket-detail') {
+                      window.history.back();
+                    } else {
+                      const defaultBack = reports.some(r => r.id === activeReport.id && r.id.startsWith('rep_local_')) ? 'report' : 'map';
+                      navigateTo(defaultBack, null);
+                    }
                   }}
                   onUpdateStatus={handleUpdateStatus}
                   onUpdateWitness={handleUpdateWitness}
@@ -239,7 +295,7 @@ export default function App() {
                   <h4 className="font-bold text-[#2d332d]">Ticket Missing or Deleted</h4>
                   <p className="text-xs text-[#8a8a7a] mt-1">This report doesn't exist in local compliance caches. Return and choose another grid.</p>
                   <button 
-                    onClick={() => setCurrentScreen('report')}
+                    onClick={() => navigateTo('report')}
                     className="mt-4 px-4 py-2 bg-[#3a5a40] text-white rounded-lg text-xs font-semibold"
                   >
                     Back to Portal

@@ -3,6 +3,7 @@ import { CivicReport } from '../types';
 export const INITIAL_REPORTS: CivicReport[] = [
   {
     id: "rep_001",
+    referenceId: "GMC-REF-100001",
     photoUrl: "https://images.unsplash.com/photo-1515162305285-0293e4767cc2?auto=format&fit=crop&w=600&q=80",
     geo: {
       lat: 23.2172,
@@ -17,8 +18,8 @@ export const INITIAL_REPORTS: CivicReport[] = [
       hazards: ["Vehicle damage risk", "Two-wheeler skidding hazard", "Traffic traffic bottleneck"],
       confidence: 0.94
     },
-    department: "GMC Road Engineering Department",
-    officer: "Dr. Ramesh Patel (Executive Engineer)",
+    department: "GMC Roads & Engineering Division",
+    officer: "Executive Engineer, Roads & Engineering",
     complaintEn: "To,\nThe Municipal Commissioner,\nGandhinagar Municipal Corporation.\n\nSubject: Urgent repair of deep potholes near Sector 3 Intersection.\n\nDear Sir/Madam,\nThis is to draw your immediate attention to the critical state of the road near Sector 3 intersection. Multiple deep potholes have opened up, causing severe vehicle damage and presenting an immediate collision hazard for two-wheeler commuters, especially during night hours. Prompt resurfacing is highly requested.\n\nSincerely,\nConcerned Citizen of Gandhinagar",
     complaintHi: "सेवा में,\nनगर आयुक्त,\nगांधीनगर नगर निगम।\n\nविषय: सेक्टर 3 चौराहे के पास गहरे गड्ढों की तत्काल मरम्मत के संबंध में।\n\nमहोदय/महोदया,\nइस पत्र के माध्यम से आपका ध्यान सेक्टर 3 चौराहे के पास सड़क की अत्यंत जर्जर स्थिति की ओर आकर्षित करना है। सड़क पर कई गहरे गड्ढे हो गए हैं, जिससे वाहनों को भारी नुकसान हो रहा है और दोपहिया वाहन चालकों के फिसलने का गंभीर खतरा बना हुआ है। कृपया इस पर तत्काल संज्ञान लेकर सड़क मरम्मत का कार्य शुरू कराएं।\n\nभवदीय,\nगांधीनगर का जागरूक नागरिक",
     status: "open",
@@ -31,6 +32,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
   },
   {
     id: "rep_002",
+    referenceId: "GMC-REF-100002",
     photoUrl: "https://images.unsplash.com/photo-1611284446314-60a58ac0deb9?auto=format&fit=crop&w=600&q=80",
     geo: {
       lat: 23.2215,
@@ -45,8 +47,8 @@ export const INITIAL_REPORTS: CivicReport[] = [
       hazards: ["Health hazard from decay", "Footpath blockage", "Stray cattle accident risk"],
       confidence: 0.89
     },
-    department: "GMC Solid Waste Management",
-    officer: "Shri Amit Shah (Zonal Officer)",
+    department: "Solid Waste Management",
+    officer: "Chief Sanitation Inspector",
     complaintEn: "To,\nThe Health Officer / Waste Management Division,\nGandhinagar Municipal Corporation.\n\nSubject: Malodor and overflow of garbage dumpster in Sector 17 Market.\n\nRespected Officer,\nAn overflowing public dumpster has been left uncollected in Sector 17 commercial market for over 48 hours. The rotting waste has spilled over the pedestrian footpath, inducing an intolerable stench and breeding stray dogs and cattle. Requesting immediate clearing and regular schedules.\n\nBest Regards,\nNagarMitra User",
     complaintHi: "सेवा में,\nस्वास्थ्य अधिकारी / ठोस कचरा प्रबंधन प्रभाग,\nगांधीनगर नगर निगम।\n\nविषय: सेक्टर 17 बाजार में कचरा डंपर के ओवरफ्लो होने और दुर्गंध के संबंध में।\n\nआदरणीय अधिकारी महोदय,\nसेक्टर 17 के व्यावसायिक बाजार में एक सार्वजनिक कचरा डंपर पिछले 48 घंटों से खाली नहीं किया गया है। सड़ा हुआ कचरा पैदल चलने वाले फुटपाथ पर फैल गया है, जिससे असहनीय दुर्गंध आ रही है और गाय-कुत्तों का जमावड़ा लगा हुआ है। तत्काल सफाई सुनिश्चित की जाए।\n\nसादर,\nनगरमित्र उपयोगकर्ता",
     status: "acknowledged",
@@ -59,6 +61,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
   },
   {
     id: "rep_003",
+    referenceId: "GMC-REF-100003",
     photoUrl: "https://images.unsplash.com/photo-1509395062183-67c5ad6faff9?auto=format&fit=crop&w=600&q=80",
     geo: {
       lat: 23.1895,
@@ -87,6 +90,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
   },
   {
     id: "rep_004",
+    referenceId: "GMC-REF-100004",
     photoUrl: "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=600&q=80",
     geo: {
       lat: 23.2354,

@@ -1,5 +1,12 @@
 export type IssueStatus = 'open' | 'acknowledged' | 'escalated' | 'resolved';
 
+export interface ActionTimelineEntry {
+  action: string;
+  timestamp: number;
+  by: string;
+  details?: string;
+}
+
 export interface Ward {
   id: string;
   name: string;
@@ -21,6 +28,7 @@ export interface AIAnalysis {
 
 export interface CivicReport {
   id: string; // Document ID
+  referenceId: string; // Human-readable stable reference ID
   photoUrl: string;
   geo: GeoLocation;
   category: string;
@@ -30,6 +38,7 @@ export interface CivicReport {
   officer: string;
   complaintEn: string;
   complaintHi: string;
+  complaintGu?: string;
   status: IssueStatus;
   createdAt: number; // epoch ms
   lastEscalatedAt: number | null;
@@ -37,6 +46,31 @@ export interface CivicReport {
   embedding: number[];
   duplicateOf: string | null;
   note?: string; // Optional manual note
+  escalationNotice?: string;
+  escalationNoticeIsOffline?: boolean;
+  escalationTier?: number; // 0 to 4
+  nextDueDate?: number; // epoch ms
+  escalationDocs?: {
+    tier1Notice?: string;
+    tier2Notice?: string;
+    tier3RTI?: string;
+    tier3Swagat?: string;
+    tier3Cpgrams?: string;
+    tier4Notice?: string;
+  };
+  actionTimeline?: ActionTimelineEntry[];
+  complaintSources?: Array<{ title: string; url: string }>;
+  escalationSources?: Record<string, Array<{ title: string; url: string }>>;
+  complaintGroundingStatus?: string;
+  complaintGroundingError?: string;
+  complaintGroundingSummary?: string;
+  escalationGroundingStatus?: Record<string, string>;
+  escalationGroundingError?: Record<string, string>;
+  escalationGroundingSummary?: Record<string, string>;
+  classificationReasoning?: string;
+  alternativeCategories?: string;
+  severityFactors?: string;
+  visionError?: string;
 }
 
 export interface StepActivity {
