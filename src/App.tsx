@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Map, BarChart3, HelpCircle, FileText, 
-  Sparkles, ShieldCheck, Database, Loader2, AlertCircle
+  Sparkles, ShieldCheck, Database, Loader2, AlertCircle,
+  MessageSquare
 } from 'lucide-react';
 import { ensureAnonymousAuth } from './firebase';
 import { fetchReports } from './utils/reportStore';
@@ -13,8 +14,9 @@ import ReportIssue from './components/ReportIssue';
 import CivicMap from './components/CivicMap';
 import TicketDetail from './components/TicketDetail';
 import Dashboard from './components/Dashboard';
+import NagarMitraChat from './components/NagarMitraChat';
 
-type Screen = 'report' | 'map' | 'dashboard' | 'ticket-detail';
+type Screen = 'report' | 'map' | 'chat' | 'dashboard' | 'ticket-detail';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('report');
@@ -124,6 +126,15 @@ export default function App() {
     );
   };
 
+  const handleUpdateReasoning = (
+    reportId: string,
+    reasoning: { classificationReasoning: string; alternativeCategories: string; severityFactors: string }
+  ) => {
+    setReports(prev =>
+      prev.map(r => r.id === reportId ? { ...r, ...reasoning } : r)
+    );
+  };
+
   const activeReport = reports.find(r => r.id === selectedReportId);
 
   // Trigger Detail views from search click
@@ -187,6 +198,14 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => navigateTo('chat')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'chat' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              💬 Ask NagarMitra
+            </button>
+
+            <button
               onClick={() => navigateTo('dashboard')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'dashboard' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
             >
@@ -206,7 +225,7 @@ export default function App() {
         </div>
 
         {/* Mobile Navigation tab overlays */}
-        <div className="sm:hidden grid grid-cols-3 border-t border-[#e2e2d5] p-1 bg-[#fafaf5]/50">
+        <div className="sm:hidden grid grid-cols-4 border-t border-[#e2e2d5] p-1 bg-[#fafaf5]/50">
           <button
             onClick={() => navigateTo('report')}
             className={`py-2 text-center text-xs font-bold transition flex flex-col items-center gap-0.5 ${currentScreen === 'report' ? 'text-[#3a5a40] border-b-2 border-[#3a5a40]' : 'text-[#8a8a7a]'}`}
@@ -221,6 +240,14 @@ export default function App() {
           >
             <Map className="w-4 h-4" />
             Civic Map
+          </button>
+
+          <button
+            onClick={() => navigateTo('chat')}
+            className={`py-2 text-center text-xs font-bold transition flex flex-col items-center gap-0.5 ${currentScreen === 'chat' ? 'text-[#3a5a40] border-b-2 border-[#3a5a40]' : 'text-[#8a8a7a]'}`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            Ask NM
           </button>
 
           <button
@@ -264,6 +291,10 @@ export default function App() {
                 />
               )}
 
+              {currentScreen === 'chat' && (
+                <NagarMitraChat />
+              )}
+
               {currentScreen === 'dashboard' && (
                 <Dashboard 
                   reports={reports} 
@@ -286,6 +317,7 @@ export default function App() {
                   }}
                   onUpdateStatus={handleUpdateStatus}
                   onUpdateWitness={handleUpdateWitness}
+                  onUpdateReasoning={handleUpdateReasoning}
                 />
               )}
 

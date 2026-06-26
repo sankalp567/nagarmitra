@@ -116,6 +116,289 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
     return selectedNotice.escalationNotice || '';
   };
 
+  // State to store civic health scores prediction
+  const [healthPrediction, setHealthPrediction] = useState<string>('');
+  const [loadingPrediction, setLoadingPrediction] = useState<boolean>(false);
+
+  // Calculation of Civic Health Score for each ward
+  const calculatedWards = React.useMemo(() => {
+    const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
+    const window14d = 14 * 24 * 60 * 60 * 1000;
+
+    return GANDHINAGAR_WARDS.map(ward => {
+      const wardReports = reports.filter(r => r.geo.ward === ward.id);
+      
+      if (wardReports.length === 0) {
+        return {
+          ward,
+          score: 100,
+          total: 0,
+          openCount: 0,
+          resolvedCount: 0,
+          avgAgeDays: 0,
+          avgSeverity: 0,
+          velocity14d: 0,
+          statusColor: 'text-emerald-600 bg-emerald-50 border-emerald-100',
+          badgeColor: 'bg-emerald-500',
+          barColor: 'bg-emerald-500'
+        };
+      }
+
+      const openReports = wardReports.filter(r => r.status !== 'resolved');
+      const resolvedCount = wardReports.filter(r => r.status === 'resolved').length;
+      const total = wardReports.length;
+
+      // Report velocity in last 14 days of virtual timeline
+      const velocity14d = wardReports.filter(r => r.createdAt >= (virtualNow - window14d)).length;
+
+      // Average severity of open issues
+      const avgSeverity = openReports.length > 0 
+        ? openReports.reduce((sum, r) => sum + r.severity, 0) / openReports.length 
+        : 0;
+
+      // Average age of open tickets in days
+      const avgAgeDays = openReports.length > 0 
+        ? openReports.reduce((sum, r) => sum + Math.max(0, (virtualNow - r.createdAt)), 0) / openReports.length / (24 * 60 * 60 * 1000) 
+        : 0;
+
+      // Start with base of 100
+      let calculatedScore = 100;
+
+      // 1. Penalty for ratio of open tickets to total tickets (up to 30 pts)
+      const openRatio = total > 0 ? openReports.length / total : 0;
+      calculatedScore -= openRatio * 30;
+
+      // 2. Penalty for average age of open tickets (up to 25 pts)
+      calculatedScore -= Math.min(avgAgeDays * 2.5, 25);
+
+      // 3. Penalty for average severity of open tickets (up to 20 pts)
+      if (avgSeverity > 0) {
+        calculatedScore -= Math.min((avgSeverity - 1) * 5, 20);
+      }
+
+      // 4. Penalty for report velocity in the last 14 days (up to 25 pts)
+      calculatedScore -= Math.min(velocity14d * 3, 25);
+
+      const finalScore = Math.max(0, Math.min(100, Math.round(calculatedScore)));
+
+      let statusColor = 'text-emerald-600 bg-emerald-50 border-emerald-100';
+      let badgeColor = 'bg-emerald-500';
+      let barColor = 'bg-[#3a5a40]';
+      
+      if (finalScore < 50) {
+        statusColor = 'text-rose-600 bg-rose-50 border-rose-100';
+        badgeColor = 'bg-rose-500';
+        barColor = 'bg-rose-500';
+      } else if (finalScore < 80) {
+        statusColor = 'text-amber-600 bg-amber-50 border-amber-100';
+        badgeColor = 'bg-amber-500';
+        barColor = 'bg-amber-500';
+      }
+
+      return {
+        ward,
+        score: finalScore,
+        total,
+        openCount: openReports.length,
+        resolvedCount,
+        avgAgeDays: Math.round(avgAgeDays * 10) / 10,
+        avgSeverity: Math.round(avgSeverity * 10) / 10,
+        velocity14d,
+        statusColor,
+        badgeColor,
+        barColor
+      };
+    });
+  }, [reports, simulatedOffsetDays]);
+
+  const atRiskWardsSummary = React.useMemo(() => {
+    const sortedAtRisk = [...calculatedWards]
+      .filter(ws => ws.total > 0)
+      .sort((a, b) => a.score - b.score);
+    
+    if (sortedAtRisk.length === 0) return '';
+    return sortedAtRisk.slice(0, 2).map(ws => 
+      `- Ward: ${ws.ward.name}, Score: ${ws.score}/100, Open Tickets: ${ws.openCount}/${ws.total}, Average Age: ${ws.avgAgeDays} days, Average Severity: ${ws.avgSeverity}/5, 14d Report Velocity: ${ws.velocity14d} tickets.`
+    ).join('\n');
+  }, [calculatedWards]);
+
+  React.useEffect(() => {
+    if (!atRiskWardsSummary) {
+      setHealthPrediction("AI-predicted: All municipal wards are operating at perfect baseline health with zero active complaints registered across Gandhinagar.");
+      return;
+    }
+
+    setLoadingPrediction(true);
+    const fetchPrediction = async () => {
+      try {
+        const response = await fetch('/api/predictive-health', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ atRiskWardsSummary })
+        });
+        const data = await response.json();
+        if (data.success && data.prediction) {
+          setHealthPrediction(data.prediction);
+        } else {
+          setHealthPrediction("AI-predicted: Civic health prediction is currently offline. Review the computed scores below.");
+        }
+      } catch (err) {
+        console.error("Failed to fetch predictive health note:", err);
+        setHealthPrediction("AI-predicted: Civic health prediction is currently offline. Review the computed scores below.");
+      } finally {
+        setLoadingPrediction(false);
+      }
+    };
+
+    fetchPrediction();
+  }, [atRiskWardsSummary]);
+
+  // State to store generated systemic bulletins
+  const [bulletinCache, setBulletinCache] = useState<{ [clusterId: string]: { text: string; loading: boolean } }>({});
+
+  // Function to calculate Haversine distance
+  const getHaversineDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371e3; // Earth radius in meters
+    const phi1 = (lat1 * Math.PI) / 180;
+    const phi2 = (lat2 * Math.PI) / 180;
+    const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
+    const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
+
+    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+              Math.cos(phi1) * Math.cos(phi2) *
+              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c; // in meters
+  };
+
+  // 1. Filter reports within the 14-day rolling window of virtual clock, grouped and cached
+  const top3Clusters = React.useMemo(() => {
+    const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
+    const rollingWindowMs = 14 * 24 * 60 * 60 * 1000;
+
+    const activeReportsInWindow = reports.filter(r => {
+      const isDocActive = r.status !== 'resolved';
+      const ticketTime = r.createdAt;
+      const inWindow = ticketTime <= virtualNow && ticketTime >= (virtualNow - rollingWindowMs);
+      return isDocActive && inWindow;
+    });
+
+    // 2. Identify Type A Clusters (Same ward, same category, 3+ tickets)
+    const sameCategoryGroups: { [key: string]: CivicReport[] } = {};
+    activeReportsInWindow.forEach(r => {
+      const key = `${r.geo.ward}_${r.category}`;
+      if (!sameCategoryGroups[key]) {
+        sameCategoryGroups[key] = [];
+      }
+      sameCategoryGroups[key].push(r);
+    });
+
+    const typeAClusters = Object.entries(sameCategoryGroups)
+      .filter(([_, groupTickets]) => groupTickets.length >= 3)
+      .map(([key, groupTickets]) => {
+        const firstTicket = groupTickets[0];
+        return {
+          id: `same_cat_${key}`,
+          wardId: firstTicket.geo.ward,
+          wardName: firstTicket.geo.wardName,
+          category: firstTicket.category,
+          count: groupTickets.length,
+          tickets: groupTickets,
+          isRelatedCategory: false
+        };
+      });
+
+    // 3. Identify Type B Clusters (Related categories potholes + drainage + water supply/sewage within 500m, 4+ tickets)
+    const relatedTickets = activeReportsInWindow.filter(r => 
+      r.category === 'Potholes & Roads' || r.category === 'Water Supply & Sewage'
+    );
+
+    const typeBClusters = [];
+    const visitedTickets = new Set<string>();
+
+    for (const t of relatedTickets) {
+      if (visitedTickets.has(t.id)) continue;
+      
+      // Find all related tickets within 500m of this ticket 't'
+      const clusterTickets = relatedTickets.filter(other => {
+        const dist = getHaversineDistance(t.geo.lat, t.geo.lng, other.geo.lat, other.geo.lng);
+        return dist <= 500;
+      });
+      
+      if (clusterTickets.length >= 4) {
+        clusterTickets.forEach(ct => visitedTickets.add(ct.id));
+        typeBClusters.push({
+          id: `related_dist_${t.id}`,
+          wardId: t.geo.ward,
+          wardName: t.geo.wardName,
+          category: 'Potholes & Water/Drainage Systemic Issue',
+          count: clusterTickets.length,
+          tickets: clusterTickets,
+          isRelatedCategory: true
+        });
+      }
+    }
+
+    // Combine and get top 3 clusters sorted by size
+    const allClusters = [...typeAClusters, ...typeBClusters]
+      .sort((a, b) => b.count - a.count);
+    return allClusters.slice(0, 3);
+  }, [reports, simulatedOffsetDays]);
+
+  React.useEffect(() => {
+    top3Clusters.forEach(cluster => {
+      if (bulletinCache[cluster.id]) return; // already cached or loading
+
+      // Set loading state
+      setBulletinCache(prev => ({
+        ...prev,
+        [cluster.id]: { text: '', loading: true }
+      }));
+
+      const fetchBulletin = async () => {
+        try {
+          const ticketDetails = cluster.tickets.map(t => 
+            `Ref ID: ${t.referenceId}, Description: ${t.aiAnalysis?.description || t.category}, Note: ${t.note || 'None'}`
+          );
+
+          const response = await fetch('/api/systemic-bulletin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wardName: cluster.wardName,
+              category: cluster.category,
+              count: cluster.count,
+              ticketDetails
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+          }
+
+          const data = await response.json();
+          if (data.success && data.bulletin) {
+            setBulletinCache(prev => ({
+              ...prev,
+              [cluster.id]: { text: data.bulletin, loading: false }
+            }));
+          } else {
+            throw new Error(data.error || "Failed to fetch bulletin text");
+          }
+        } catch (err) {
+          console.error("Failed to generate systemic bulletin:", err);
+          setBulletinCache(prev => ({
+            ...prev,
+            [cluster.id]: { text: 'AI busy — bulletin pending', loading: false }
+          }));
+        }
+      };
+
+      fetchBulletin();
+    });
+  }, [reports, simulatedOffsetDays]);
+
   // 1. Impact metrics calculation
   const totalReported = reports.length;
   const totalResolved = reports.filter(r => r.status === 'resolved').length;
@@ -464,6 +747,195 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
           <p>
             NagarMitra brings SWAGAT 2.0's proven auto-escalation model to the GMC ward level — where no such tool exists today.
           </p>
+        </div>
+      </div>
+
+      {/* Systemic Alerts Panel */}
+      <div id="systemic-alerts-panel" className="bg-[#fffdfa] border border-[#f5d0a9] rounded-3xl p-6 mb-8 animate-fadeIn">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#f5d0a9] pb-4 mb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-amber-500/10 text-amber-700 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-amber-600 animate-pulse" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+                AI-Detected Systemic Alerts
+              </h2>
+              <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">Autonomous patterns flagged across active files in Gandhinagar wards within a 14-day rolling window.</p>
+            </div>
+          </div>
+          <span className="bg-amber-100/80 border border-amber-200 text-amber-800 text-[9px] font-mono font-bold px-2.5 py-1 rounded-full uppercase tracking-wider self-start sm:self-center">
+            AI Pattern Scanner
+          </span>
+        </div>
+
+        {top3Clusters.length > 0 ? (
+          <div className="space-y-4">
+            {top3Clusters.map((cluster) => {
+              const cache = bulletinCache[cluster.id];
+              return (
+                <div key={cluster.id} className="bg-white border border-[#e2e2d5] rounded-2xl p-4 flex flex-col justify-between gap-4 shadow-3xs hover:border-amber-400/60 transition duration-150">
+                  <div className="flex-grow space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[10px] font-bold text-[#1a2e1d] bg-amber-500/10 border border-amber-200 px-2 py-0.5 rounded-lg font-mono">
+                        {cluster.wardName}
+                      </span>
+                      <span className="text-[10px] font-bold text-[#5a5a40] font-sans">
+                        {cluster.category}
+                      </span>
+                      <span className="text-[10px] font-mono font-black text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-lg">
+                        {cluster.count} Active Reports
+                      </span>
+                      <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
+                        AI-Detected Cluster
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-[#5a5a40] font-mono truncate leading-relaxed">
+                      Affected Tickets: {cluster.tickets.map(t => `#${t.referenceId}`).join(', ')}
+                    </p>
+
+                    <div className="bg-[#fafaf5] border border-[#e2e2d5] p-3 rounded-xl mt-2 relative overflow-hidden">
+                      <div className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider mb-1 font-sans flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                        Systemic Risk Bulletin (AI-Detected)
+                      </div>
+                      
+                      {cache?.loading ? (
+                        <div className="flex items-center gap-2 py-1 text-xs text-[#8a8a7a]">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                          <span>Generating bulletin using Gemini...</span>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-[#2d332d] font-sans leading-relaxed">
+                          {cache?.text || 'AI busy — bulletin pending'}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs text-[#8a8a7a] italic p-6 text-center bg-white rounded-2xl border border-dashed border-[#e2e2d5]">
+            No active systemic issue clusters detected in the 14-day rolling window. Municipal services are operating within normal baseline levels across all Gandhinagar wards.
+          </div>
+        )}
+      </div>
+
+      {/* Civic Health Score Predictive Panel */}
+      <div id="civic-health-score-panel" className="bg-white border border-[#e2e2d5] rounded-3xl p-6 mb-8 animate-fadeIn">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#e2e2d5] pb-4 mb-5">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-[#3a5a40]/10 text-[#3a5a40] rounded-lg">
+              <Activity className="w-5 h-5 text-[#3a5a40]" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+                GMC Ward Civic Health Index
+              </h2>
+              <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">
+                Live 0-100 real-time predictive scores based on pending backlog, severity, age of open tickets, and reporting velocity.
+              </p>
+            </div>
+          </div>
+          <span className="bg-[#3a5a40]/10 border border-[#3a5a40]/20 text-[#3a5a40] text-[9px] font-mono font-bold px-2.5 py-1 rounded-full uppercase tracking-wider self-start sm:self-center">
+            SLA Health Analytics
+          </span>
+        </div>
+
+        {/* AI Predictive Note Card */}
+        <div className="bg-[#fafaf5] border border-[#e2e2d5] p-4 rounded-2xl mb-6 relative overflow-hidden flex flex-col md:flex-row gap-4 items-start shadow-3xs">
+          <div className="absolute top-0 left-0 w-1.5 h-full bg-[#3a5a40]" />
+          <div className="p-2 bg-white rounded-xl border border-[#e2e2d5] shadow-3xs shrink-0 self-start">
+            <Sparkles className="w-5 h-5 text-amber-500 animate-pulse" />
+          </div>
+          <div className="space-y-1.5 flex-grow">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase font-black text-[#1a2e1d] tracking-wider font-sans">
+                AI-Predicted Ward Health Forecast
+              </span>
+              <span className="bg-emerald-100 text-emerald-800 text-[8px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-widest font-mono">
+                AI-Predicted
+              </span>
+            </div>
+            {loadingPrediction ? (
+              <div className="flex items-center gap-2 text-xs text-[#8a8a7a] py-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#3a5a40]" />
+                <span>Forecasting next ward risks with Gemini...</span>
+              </div>
+            ) : (
+              <p className="text-xs text-[#2d332d] font-semibold leading-relaxed font-sans">
+                {healthPrediction || "Review the computed health indices for each of the municipal wards below."}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Grid of Wards and Health Scores */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {calculatedWards.map((ws) => {
+            return (
+              <div 
+                key={ws.ward.id} 
+                className="bg-white border border-[#e2e2d5] hover:border-[#3a5a40]/30 rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-3xs transition duration-150"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-[#8a8a7a] font-mono font-bold block">
+                      {ws.ward.representative.split(' (')[0]}
+                    </span>
+                    <h4 className="text-xs font-bold text-[#1a2e1d] truncate max-w-[170px]" title={ws.ward.name}>
+                      {ws.ward.name}
+                    </h4>
+                  </div>
+                  
+                  {/* Color-Coded Score Badge */}
+                  <div className={`px-2.5 py-1 rounded-xl border font-mono font-bold text-xs ${ws.statusColor} flex items-center gap-1.5 shadow-3xs`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${ws.badgeColor}`} />
+                    <span>{ws.score}/100</span>
+                  </div>
+                </div>
+
+                {/* Interactive Health Progress Bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-[#8a8a7a] font-bold">
+                    <span>Health Index</span>
+                    <span>{ws.score}%</span>
+                  </div>
+                  <div className="w-full bg-[#fafaf5] border border-[#e2e2d5]/60 h-2 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full ${ws.barColor} transition-all duration-500`}
+                      style={{ width: `${ws.score}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Backlog stats */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#fafaf5] text-center">
+                  <div>
+                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">Pending</span>
+                    <span className="text-[11px] font-bold font-mono text-[#1a2e1d]">
+                      {ws.openCount} <span className="text-[9px] text-[#8a8a7a] font-normal">/ {ws.total}</span>
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">Avg Age</span>
+                    <span className="text-[11px] font-bold font-mono text-[#1a2e1d]">
+                      {ws.avgAgeDays}d
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">14d Velocity</span>
+                    <span className="text-[11px] font-bold font-mono text-rose-600">
+                      +{ws.velocity14d}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 

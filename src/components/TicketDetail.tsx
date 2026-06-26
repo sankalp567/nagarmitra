@@ -4,10 +4,11 @@ import {
   ArrowLeft, Calendar, User, ShieldAlert, FileText, CheckCircle2, 
   MapPin, Copy, Download, Share2, Mail, ExternalLink, Sparkles,
   Award, ArrowUpRight, Check, AlertCircle, Building, ShieldCheck,
-  HelpCircle, ChevronDown, ChevronUp
+  HelpCircle, ChevronDown, ChevronUp, MessageSquare, Send, Loader2
 } from 'lucide-react';
 import { CivicReport, IssueStatus } from '../types';
-import { updateReportStatus, addCoWitness } from '../utils/reportStore';
+import { updateReportStatus, addCoWitness, updateReportReasoning } from '../utils/reportStore';
+import { getProxiedImageUrl } from '../utils/imageUtils';
 
 interface TicketDetailProps {
   report: CivicReport;
@@ -15,6 +16,10 @@ interface TicketDetailProps {
   previousView?: 'report' | 'map' | 'dashboard' | null;
   onUpdateStatus: (reportId: string, status: IssueStatus) => void;
   onUpdateWitness: (reportId: string, email: string) => void;
+  onUpdateReasoning?: (
+    reportId: string,
+    reasoning: { classificationReasoning: string; alternativeCategories: string; severityFactors: string }
+  ) => void;
 }
 
 const isValidUrl = (urlStr: string): boolean => {
@@ -76,7 +81,14 @@ const getLocalGroundingForCategory = (category: string) => {
   };
 };
 
-export default function TicketDetail({ report, onBack, previousView, onUpdateStatus, onUpdateWitness }: TicketDetailProps) {
+export default function TicketDetail({ 
+  report, 
+  onBack, 
+  previousView, 
+  onUpdateStatus, 
+  onUpdateWitness,
+  onUpdateReasoning 
+}: TicketDetailProps) {
   const [activeLang, setActiveLang] = useState<'EN' | 'HI' | 'GU'>('EN');
   const [copied, setCopied] = useState<boolean>(false);
   const [witnessEmail, setWitnessEmail] = useState<string>('');
@@ -84,6 +96,140 @@ export default function TicketDetail({ report, onBack, previousView, onUpdateSta
   const [activeDocTabDetail, setActiveDocTabDetail] = useState<string>('primary');
   const [copiedDetail, setCopiedDetail] = useState<boolean>(false);
   const [isWhyClassificationOpen, setIsWhyClassificationOpen] = useState<boolean>(false);
+
+  // Poll for reasoning fields if they are missing
+  React.useEffect(() => {
+    if (!report) return;
+    
+    const hasReasoning = report.classificationReasoning && report.alternativeCategories && report.severityFactors;
+    if (hasReasoning) return;
+
+    let isMounted = true;
+    let pollCount = 0;
+    const maxPolls = 10;
+    const pollInterval = 3000; // 3 seconds
+
+    const poll = async () => {
+      try {
+        pollCount++;
+        console.log(`[Reasoning Polling] Checking reasoning for ticket ${report.id}, attempt #${pollCount}...`);
+        
+        const response = await fetch(`/api/reasoning/${report.referenceId || report.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: report.category,
+            severity: report.severity,
+            hazards: report.aiAnalysis?.hazards || [],
+            description: report.aiAnalysis?.description || '',
+            userNote: report.note || ''
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!isMounted) return;
+
+        if (data.success && data.status === 'completed' && data.result) {
+          console.log("[Reasoning Polling] Succeeded! Updating reasoning fields:", data.result);
+          // 1. Update report store
+          await updateReportReasoning(report.id, data.result);
+          // 2. Update parent/app state
+          if (onUpdateReasoning) {
+            onUpdateReasoning(report.id, data.result);
+          }
+          return; // Stop polling
+        }
+
+        if (pollCount < maxPolls) {
+          setTimeout(poll, pollInterval);
+        } else {
+          console.log("[Reasoning Polling] Reached max attempts. Stopping polling.");
+        }
+      } catch (err) {
+        console.warn("[Reasoning Polling] Attempt failed:", err);
+        if (isMounted && pollCount < maxPolls) {
+          setTimeout(poll, pollInterval);
+        }
+      }
+    };
+
+    // Start polling after a short initial delay of 1.5 seconds
+    const initialTimer = setTimeout(poll, 1500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(initialTimer);
+    };
+  }, [report?.id, report?.referenceId]);
+
+  // Chat states for conversational assistant
+  const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'model'; text: string; timestamp: number }>>([
+    {
+      role: 'model',
+      text: `Hello! I am your NagarMitra status assistant. Feel free to ask me anything about your Ticket #${report.id} in English, Hindi (हिंदी), or Gujarati (ગુજરાતી).`,
+      timestamp: Date.now()
+    }
+  ]);
+  const [chatInput, setChatInput] = useState<string>('');
+  const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
+
+  const handleSendChatMessage = async (text: string) => {
+    if (!text.trim() || isChatLoading) return;
+
+    const userMsg = text.trim();
+    setChatInput('');
+    
+    // Add user message to state
+    const updatedMessages = [
+      ...chatMessages,
+      { role: 'user' as const, text: userMsg, timestamp: Date.now() }
+    ];
+    setChatMessages(updatedMessages);
+    setIsChatLoading(true);
+
+    try {
+      const history = updatedMessages.slice(0, -1).map(m => ({
+        role: m.role,
+        text: m.text
+      }));
+
+      const res = await fetch('/api/ticket-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket: report,
+          message: userMsg,
+          history: history
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.success && data.response) {
+        setChatMessages(prev => [
+          ...prev,
+          { role: 'model', text: data.response, timestamp: Date.now() }
+        ]);
+      } else {
+        throw new Error(data.error || 'Server error');
+      }
+    } catch (err) {
+      console.error("Chat message delivery failed:", err);
+      setChatMessages(prev => [
+        ...prev,
+        { role: 'model', text: 'AI is busy — try again in a moment', timestamp: Date.now() }
+      ]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
 
   const displayGroundingSummary = report.complaintGroundingSummary || getLocalGroundingForCategory(report.category).summary;
   const rawSources = (Array.isArray(report.complaintSources) && report.complaintSources.length > 0) 
@@ -322,7 +468,16 @@ export default function TicketDetail({ report, onBack, previousView, onUpdateSta
           <div className="bg-white border border-[#e2e2d5] rounded-3xl overflow-hidden shadow-sm">
             {/* Top Image Preview Banner */}
             <div className="relative h-64 bg-slate-900">
-              <img src={report.photoUrl} alt={report.category} className="w-full h-full object-cover opacity-90" />
+              <img 
+                src={getProxiedImageUrl(report.photoUrl)} 
+                alt={report.category} 
+                referrerPolicy="no-referrer" 
+                className="w-full h-full object-cover opacity-90" 
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='640' height='480'><rect width='100%' height='100%' fill='%23e2e2d5'/></svg>";
+                }}
+              />
               {/* Category tag overlay */}
               <div className="absolute bottom-4 left-4 bg-[#3a5a40]/90 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-[#5a7a5a] font-bold text-xs text-white uppercase tracking-wider">
                 {report.category}
@@ -829,6 +984,104 @@ export default function TicketDetail({ report, onBack, previousView, onUpdateSta
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Ask NagarMitra chat panel */}
+          <div id="ask-nagarmitra-chat-panel" className="bg-white border border-[#e2e2d5] rounded-3xl p-6 shadow-sm flex flex-col gap-4">
+            <div className="border-b border-[#e2e2d5] pb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-50 text-emerald-700 rounded-lg">
+                  <MessageSquare className="w-4.5 h-4.5 text-emerald-600 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-xs text-[#1a2e1d] uppercase tracking-wider font-sans">
+                    Ask NagarMitra Desk
+                  </h3>
+                  <p className="text-[9px] text-[#8a8a7a] mt-0.5 font-medium">Conversational status assistant (English/Hindi/Gujarati)</p>
+                </div>
+              </div>
+              <span className="bg-emerald-50 border border-emerald-100 text-emerald-800 text-[8px] font-mono font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                Grounded Agent
+              </span>
+            </div>
+
+            {/* Scrollable conversation bubble area */}
+            <div className="space-y-3 max-h-64 overflow-y-auto pr-1 bg-[#fafaf5] p-3 rounded-2xl border border-[#e2e2d5]/60 min-h-[140px] flex flex-col">
+              {chatMessages.map((msg, index) => {
+                const isModel = msg.role === 'model';
+                return (
+                  <div
+                    key={index}
+                    className={`max-w-[85%] rounded-2xl p-3 text-xs leading-relaxed ${
+                      isModel
+                        ? 'bg-white border border-[#e2e2d5] text-[#2d332d] self-start rounded-tl-none shadow-3xs'
+                        : 'bg-[#3a5a40] text-white self-end rounded-tr-none'
+                    }`}
+                  >
+                    {isModel && (
+                      <div className="text-[8px] uppercase font-bold text-emerald-800 tracking-wider mb-1 font-sans flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-emerald-600" />
+                        NagarMitra Agent
+                      </div>
+                    )}
+                    <p className="font-sans whitespace-pre-wrap">{msg.text}</p>
+                  </div>
+                );
+              })}
+              {isChatLoading && (
+                <div className="max-w-[85%] rounded-2xl p-3 text-xs leading-relaxed bg-white border border-[#e2e2d5] text-[#8a8a7a] self-start rounded-tl-none shadow-3xs flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                  <span>Desk Agent is reviewing ticket history...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Starter chips */}
+            <div className="space-y-1.5">
+              <span className="text-[9px] uppercase font-extrabold text-[#8a8a7a] block tracking-wider font-sans">Suggested Questions</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  "What's the current status?",
+                  "Why was it escalated?",
+                  "Who is handling it?"
+                ].map((chipText, cIdx) => (
+                  <button
+                    key={cIdx}
+                    type="button"
+                    disabled={isChatLoading}
+                    onClick={() => handleSendChatMessage(chipText)}
+                    className="text-[10px] font-medium px-2.5 py-1 bg-[#fafaf5] hover:bg-emerald-50 text-[#5a5a40] hover:text-[#3a5a40] border border-[#e2e2d5] hover:border-emerald-200 rounded-lg transition duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {chipText}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Text Input area */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSendChatMessage(chatInput);
+              }}
+              className="flex gap-2 border-t border-[#e2e2d5] pt-3"
+            >
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Ask in English, हिंदी or ગુજરાતી..."
+                disabled={isChatLoading}
+                className="flex-1 bg-white border border-[#e2e2d5] text-xs rounded-xl p-2.5 focus:border-[#3a5a40] outline-none text-[#2d332d] disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={!chatInput.trim() || isChatLoading}
+                className="bg-[#3a5a40] hover:bg-[#2f4934] text-white font-bold rounded-xl p-2.5 transition shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
           </div>
 
           {/* Co-witness signing validation */}

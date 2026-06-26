@@ -22,6 +22,46 @@ function safeLog(message: string, ...args: any[]) {
 }
 
 // Initialize the Gemini SDK safely
+export class GeminiCapacityError extends Error {
+  status: number;
+  error: string;
+  retryAfter: number;
+
+  constructor(message: string, error: string, retryAfter: number) {
+    super(message);
+    this.name = "GeminiCapacityError";
+    this.status = 503;
+    this.error = error;
+    this.retryAfter = retryAfter;
+  }
+}
+
+export let geminiCallsThisMinute = 0;
+export let geminiCallsToday = 0;
+
+// Reset every 60 seconds
+setInterval(() => {
+  geminiCallsThisMinute = 0;
+}, 60 * 1000);
+
+// Reset daily at 18:30 UTC
+function scheduleDailyReset() {
+  const now = new Date();
+  const target = new Date(now);
+  target.setUTCHours(18, 30, 0, 0);
+  if (now.getTime() >= target.getTime()) {
+    target.setUTCDate(target.getUTCDate() + 1);
+  }
+  const delay = target.getTime() - now.getTime();
+  setTimeout(() => {
+    geminiCallsToday = 0;
+    setInterval(() => {
+      geminiCallsToday = 0;
+    }, 24 * 60 * 60 * 1000);
+  }, delay);
+}
+scheduleDailyReset();
+
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
@@ -105,10 +145,7 @@ export function getOfficerForDepartment(department: string): string {
   }
 }
 
-// Global variable to keep track of hard API quota limits/billing exhaustion
-let isGeminiQuotaExceededGlobal = false;
-
-// General purpose helper for querying Gemini with extensive retries and fallbacks on 503/429
+// General purpose helper for querying Gemini with a short per-call retry with 2s backoff (max 2 retries)
 async function callGeminiAdaptive(
   aiClient: any,
   params: {
@@ -117,17 +154,9 @@ async function callGeminiAdaptive(
   },
   models: string[]
 ): Promise<{ response: any; usedModel: string }> {
-  if (isGeminiQuotaExceededGlobal) {
-    throw new Error("GEMINI_HARD_QUOTA_EXCEEDED");
-  }
-
   const errors: string[] = [];
 
   for (const model of models) {
-    if (isGeminiQuotaExceededGlobal) {
-      break;
-    }
-
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         console.log(`[CivicEngine] Trying model "${model}" - Attempt #${attempt}...`);
@@ -147,44 +176,20 @@ async function callGeminiAdaptive(
         
         errors.push(`${model} (att #${attempt}): ${logMsg}`);
 
-        // If it is a hard quota / billing limit error, set the global flag to abort immediately and permanently bypass API calls for this session
-        const isHardQuota = logMsg.toLowerCase().includes("exceeded your current quota") || 
-                            logMsg.toLowerCase().includes("billing details") || 
-                            logMsg.toLowerCase().includes("check your plan") ||
-                            logMsg.toLowerCase().includes("quota exceeded");
-
-        const isAuthOrConfigError = logMsg.toLowerCase().includes("api key") || 
-                                    logMsg.toLowerCase().includes("invalid key") || 
-                                    logMsg.toLowerCase().includes("unauthorized") || 
-                                    logMsg.toLowerCase().includes("forbidden") || 
-                                    logMsg.includes("401") || 
-                                    logMsg.includes("403") ||
-                                    logMsg.toLowerCase().includes("api_key");
-
-        if (isHardQuota || isAuthOrConfigError) {
-          safeLog(`[CivicEngine] HARD API QUOTA OR AUTH ERROR DETECTED: ${logMsg}. Switching to offline stubs.`);
-          isGeminiQuotaExceededGlobal = true;
-          break;
-        }
-
         // If it's a 404 (not found / not supported in this region/endpoint), move to the next model immediately
         if (logMsg.includes("404") || logMsg.toLowerCase().includes("not found") || logMsg.toLowerCase().includes("not supported")) {
           break;
         }
 
-        // If it is 503 (high demand) or 429 (quota/rate-limit), wait a brief moment with a randomized jitter
-        if (attempt < 3 && (logMsg.includes("503") || logMsg.includes("429") || logMsg.toLowerCase().includes("limit") || logMsg.toLowerCase().includes("quota") || logMsg.toLowerCase().includes("spikes in demand"))) {
-          const waitMs = attempt * 350 + Math.floor(Math.random() * 200);
-          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        // If we have attempts remaining, wait exactly 2 seconds before retrying
+        if (attempt < 3) {
+          console.log(`[CivicEngine] Retrying "${model}" in 2 seconds (Backoff)...`);
+          await new Promise((resolve) => setTimeout(resolve, 2000));
         } else {
           break;
         }
       }
     }
-  }
-
-  if (isGeminiQuotaExceededGlobal) {
-    throw new Error("GEMINI_HARD_QUOTA_EXCEEDED");
   }
 
   throw new Error(`All available Gemini endpoints were temporarily busy or rate-limited. Logged details: ${errors.join(" | ")}`);
@@ -217,15 +222,32 @@ export async function analyzeIssueImage(
 ): Promise<Partial<CivicReport>> {
   console.log("[VISION] real Gemini call STARTED");
   const apiKey = process.env.GEMINI_API_KEY;
-  if (isGeminiQuotaExceededGlobal) {
-    safeLog("[CivicEngine] Notice: Operating in local compliance analyzer mode.");
-    return analyzeIssueImageStub(photoUrl, userNote, lat, lng, "isGeminiQuotaExceededGlobal is true", imageName);
-  }
 
   if (!apiKey || apiKey === "DummyKey" || apiKey.includes("dummy")) {
     safeLog("[CivicEngine] Notice: Operating in local compliance analyzer mode due to key configuration.");
     return analyzeIssueImageStub(photoUrl, userNote, lat, lng, "API key is missing or dummy", imageName);
   }
+
+  const secondsToNextMinute = () => 60 - new Date().getSeconds();
+  const secondsToMidnightIST = () => {
+    const now = new Date();
+    const target = new Date(now);
+    target.setUTCHours(18, 30, 0, 0);
+    if (now.getTime() >= target.getTime()) {
+      target.setUTCDate(target.getUTCDate() + 1);
+    }
+    return Math.ceil((target.getTime() - now.getTime()) / 1000);
+  };
+
+  if (geminiCallsThisMinute >= 10) {
+    throw new GeminiCapacityError("Our AI is busy — try in a few minutes", "capacity", secondsToNextMinute());
+  }
+  if (geminiCallsToday >= 200) {
+    throw new GeminiCapacityError("Daily AI capacity reached — resets tonight", "capacity", secondsToMidnightIST());
+  }
+
+  geminiCallsThisMinute++;
+  geminiCallsToday++;
 
   // Use the latest dynamic apiKey for the client
   const aiClientHonored = new GoogleGenAI({
@@ -241,43 +263,47 @@ export async function analyzeIssueImage(
     const pipelinePromise = (async () => {
       console.log("[CivicEngine] Starting real Gemini analysis on image...");
     
-    // 1. Resolve image parts based on URL format
+    // 1. Resolve image parts based on URL format if present
     let imagePart: { inlineData: { mimeType: string; data: string } } | null = null;
     
-    if (photoUrl.startsWith("data:")) {
-      const parsed = parseDataUrl(photoUrl);
-      if (parsed) {
-        imagePart = {
-          inlineData: {
-            mimeType: parsed.mimeType,
-            data: parsed.data
-          }
-        };
+    if (photoUrl && photoUrl.trim() !== "") {
+      if (photoUrl.startsWith("data:")) {
+        const parsed = parseDataUrl(photoUrl);
+        if (parsed) {
+          imagePart = {
+            inlineData: {
+              mimeType: parsed.mimeType,
+              data: parsed.data
+            }
+          };
+        }
+      } else {
+        const fetched = await fetchRemoteImageAsBase64(photoUrl);
+        if (fetched) {
+          imagePart = {
+            inlineData: {
+              mimeType: fetched.mimeType,
+              data: fetched.data
+            }
+          };
+        }
       }
-    } else {
-      const fetched = await fetchRemoteImageAsBase64(photoUrl);
-      if (fetched) {
-        imagePart = {
-          inlineData: {
-            mimeType: fetched.mimeType,
-            data: fetched.data
-          }
-        };
-      }
-    }
-
-    if (!imagePart) {
-      throw new Error("Could not process or fetch the uploaded image data structure. Verify image format is valid.");
     }
 
     // 2. Query Gemini models with a multi-tiered robust fallback strategy
-    const promptText = `User has reported a municipal issue with the attached photo. 
+    const promptText = imagePart 
+      ? `User has reported a municipal issue with the attached photo. 
 Optional citizen added notes: "${userNote || 'No notes added'}".
-Please inspect the image and analyze the civic problem described to produce a valid compliance ticket.`;
+Please inspect the image and analyze the civic problem described to produce a valid compliance ticket.`
+      : `User has reported a municipal issue via voice/text with NO photo attached. 
+Citizen description notes: "${userNote || 'No notes added'}".
+Please analyze the described civic problem to produce a valid compliance ticket.`;
 
     const requestConfig = {
       config: {
-        systemInstruction: "You are a municipal civic-issue inspector. Look at the photo and classify it into one of the following issue_type enum values: 'pothole', 'streetlight', 'water_leak', 'garbage', 'drainage', 'stray_animals', 'public_parks', 'traffic_obstruction', or 'other'. Also identify a specific one-line description of what you see, severity 1–5 (5 = dangerous), concrete visible hazards, and your confidence percentage (0-1).",
+        systemInstruction: imagePart
+          ? "You are a municipal civic-issue inspector. Look at the photo and classify it into one of the following issue_type enum values: 'pothole', 'streetlight', 'water_leak', 'garbage', 'drainage', 'stray_animals', 'public_parks', 'traffic_obstruction', or 'other'. Also identify a specific one-line description of what you see, severity 1–5 (5 = dangerous), concrete visible hazards, and your confidence percentage (0-1)."
+          : "You are a municipal civic-issue inspector. Analyze the provided written/spoken description and classify it into one of the following issue_type enum values: 'pothole', 'streetlight', 'water_leak', 'garbage', 'drainage', 'stray_animals', 'public_parks', 'traffic_obstruction', or 'other'. Also identify a specific one-line description summarizing the reported problem, severity 1–5 (5 = dangerous), concrete described hazards, and your confidence percentage (0-1).",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -307,12 +333,11 @@ Please inspect the image and analyze the civic problem described to produce a va
     };
 
     const modelsToTry = [
+      "gemini-2.0-flash",
+      "gemini-2.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
-      "gemini-flash-latest",
-      "gemini-2.5-flash",
-      "gemini-3.1-pro-preview",
-      "gemini-2.5-pro"
+      "gemini-flash-latest"
     ];
 
     let response, usedModel;
@@ -320,7 +345,7 @@ Please inspect the image and analyze the civic problem described to produce a va
       const resultObj = await callGeminiAdaptive(
         aiClientHonored,
         {
-          contents: [imagePart, { text: promptText }],
+          contents: imagePart ? [imagePart, { text: promptText }] : [{ text: promptText }],
           ...requestConfig
         },
         modelsToTry
@@ -419,63 +444,10 @@ Please inspect the image and analyze the civic problem described to produce a va
     const description = geminiResult.description || `Detected civic irregularity involving ${category}.`;
     const confidence = Number(geminiResult.confidence) || 0.9;
 
-    // Generate reasoning-card fields in a SEPARATE step that runs AFTER classification succeeds
+    // Generate reasoning-card fields asynchronously (this is now decoupled and polled by frontend)
     let classificationReasoning: string | undefined = undefined;
     let alternativeCategories: string | undefined = undefined;
     let severityFactors: string | undefined = undefined;
-
-    try {
-      console.log("[CivicEngine] Generating diagnostic reasoning fields in a separate step...");
-      const reasoningPrompt = `A citizen reported a civic issue. We classified it using visual intelligence:
-Category: ${category}
-Severity: ${severity}/5
-Hazards: ${hazards.join(", ") || "No active safety hazards explicitly reported."}
-Description: ${description}
-User Notes: "${userNote || 'None'}"
-
-Please generate three diagnostic reasoning fields for this ticket:
-1. classificationReasoning: A detailed one-line explanation of why this category fits the visual evidence and municipal definitions.
-2. alternativeCategories: Other categories considered (e.g., "Others 15% · General Civic 5%") and their likelihood.
-3. severityFactors: The main safety or operational drivers behind the severity score of ${severity}/5.`;
-
-      const reasoningConfig = {
-        config: {
-          systemInstruction: "You are a civic diagnostic assistant. Analyze the classified ticket data and output the three required reasoning fields as valid JSON. Keep explanations professional, precise, and concise.",
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              classificationReasoning: { type: Type.STRING },
-              alternativeCategories: { type: Type.STRING },
-              severityFactors: { type: Type.STRING }
-            },
-            required: ["classificationReasoning", "alternativeCategories", "severityFactors"]
-          },
-          temperature: 0.1
-        }
-      };
-
-      const reasoningResultObj = await callGeminiAdaptive(
-        aiClientHonored,
-        {
-          contents: reasoningPrompt,
-          ...reasoningConfig
-        },
-        ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
-      );
-
-      const reasoningText = reasoningResultObj.response?.text;
-      if (reasoningText) {
-        const parsedReasoning = JSON.parse(reasoningText.trim());
-        classificationReasoning = parsedReasoning.classificationReasoning;
-        alternativeCategories = parsedReasoning.alternativeCategories;
-        severityFactors = parsedReasoning.severityFactors;
-        console.log("[CivicEngine] Successfully generated diagnostic reasoning fields!");
-      }
-    } catch (reasoningErr) {
-      console.warn("[CivicEngine] Separate reasoning generation failed. Hiding reasoning card...", reasoningErr);
-      // Leave fields as undefined, which hides the reasoning card in the UI
-    }
 
     const ticketId = "GMC-REF-" + Math.floor(100000 + Math.random() * 900000);
     const currentDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -669,6 +641,72 @@ Ensure each version:
       visionError: errMsg.includes("⚠️ Vision error") ? errMsg : `⚠️ Vision error: ${errMsg}`
     };
   }
+}
+
+export async function generateDiagnosticReasoningForTicket(params: {
+  category: string;
+  severity: number;
+  hazards: string[];
+  description: string;
+  userNote: string;
+  apiKey: string;
+  aiClientHonored: any;
+}): Promise<{
+  classificationReasoning: string;
+  alternativeCategories: string;
+  severityFactors: string;
+}> {
+  const { category, severity, hazards, description, userNote, aiClientHonored } = params;
+  
+  const reasoningPrompt = `A citizen reported a civic issue. We classified it using visual intelligence:
+Category: ${category}
+Severity: ${severity}/5
+Hazards: ${hazards.join(", ") || "No active safety hazards explicitly reported."}
+Description: ${description}
+User Notes: "${userNote || 'None'}"
+
+Please generate three diagnostic reasoning fields for this ticket:
+1. classificationReasoning: A detailed one-line explanation of why this category fits the visual evidence and municipal definitions.
+2. alternativeCategories: Other categories considered (e.g., "Others 15% · General Civic 5%") and their likelihood.
+3. severityFactors: The main safety or operational drivers behind the severity score of ${severity}/5.`;
+
+  const reasoningConfig = {
+    config: {
+      systemInstruction: "You are a civic diagnostic assistant. Analyze the classified ticket data and output the three required reasoning fields as valid JSON. Keep explanations professional, precise, and concise.",
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          classificationReasoning: { type: Type.STRING },
+          alternativeCategories: { type: Type.STRING },
+          severityFactors: { type: Type.STRING }
+        },
+        required: ["classificationReasoning", "alternativeCategories", "severityFactors"]
+      },
+      temperature: 0.1
+    }
+  };
+
+  const reasoningResultObj = await callGeminiAdaptive(
+    aiClientHonored,
+    {
+      contents: reasoningPrompt,
+      ...reasoningConfig
+    },
+    ["gemini-2.0-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+  );
+
+  const reasoningText = reasoningResultObj.response?.text;
+  if (!reasoningText) {
+    throw new Error("No text returned for diagnostic reasoning.");
+  }
+
+  const parsedReasoning = JSON.parse(reasoningText.trim());
+  return {
+    classificationReasoning: parsedReasoning.classificationReasoning || "",
+    alternativeCategories: parsedReasoning.alternativeCategories || "",
+    severityFactors: parsedReasoning.severityFactors || ""
+  };
 }
 
 // Helper function to return category-specific, authoritative legal and regulatory citations locally
@@ -922,12 +960,9 @@ export async function generateEscalationNotice(params: {
     noticeDate = currentDate
   } = params;
   const apiKey = process.env.GEMINI_API_KEY;
-  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy") || isGeminiQuotaExceededGlobal;
+  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
 
   if (isOfflineMode) {
-    if (isGeminiQuotaExceededGlobal) {
-      safeLog(`[Watchdog] Info: Generating escalation document locally.`);
-    }
     const fallbackText = getOfflineEscalationStub({ 
       ticketId, 
       currentDate, 
@@ -1127,6 +1162,7 @@ Guidelines:
     }
 
     const modelsToTry = [
+      "gemini-2.0-flash",
       "gemini-2.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
@@ -1381,3 +1417,435 @@ Since the issue continues to remain stalled, we are preparing to file a formal w
 Respectfully submitted,
 NagarMitra Civic Desk, on behalf of the complainant`;
 }
+
+export async function generateSystemicBulletin(params: {
+  wardName: string;
+  category: string;
+  count: number;
+  ticketDetails: string[];
+}): Promise<{ bulletin: string; isStub?: boolean }> {
+  const { wardName, category, count, ticketDetails } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
+
+  if (isOfflineMode) {
+    return {
+      bulletin: generateSystemicBulletinStub(wardName, category, count),
+      isStub: true
+    };
+  }
+
+  try {
+    const promptText = `Generate a concise, highly professional "Systemic Risk Bulletin" (strictly 3-4 sentences) for a municipal civic issues cluster.
+Ward: ${wardName}
+Category: ${category}
+Number of active reports in the last 14 days: ${count}
+Details of reports in this cluster:
+${ticketDetails.map((detail, idx) => `- Issue ${idx+1}: ${detail}`).join('\n')}
+
+Please provide a factual analysis that includes:
+1. A root-cause hypothesis of why multiple issues of this type (or related types) are concentrated in this area (e.g., shared water pipeline leakage causing road sinks, or faulty local street transformer, or clogged main storm drainage line causing surface pooling).
+2. A clear, actionable municipal coordination recommendation (e.g., recommend a single coordinated inspection or a root-cause engineering review, rather than separate superficial patch jobs).
+
+STRICT constraints:
+- Keep it strictly to 3-4 sentences.
+- Speak in the formal, objective tone of a Senior Civic Systems Engineer or Urban Infrastructure Inspector.
+- Do NOT use markdown headers, bullet lists, or bolding outside the prose.`;
+
+    const requestConfig = {
+      config: {
+        systemInstruction: "You are a Senior Municipal Infrastructure Inspector. Analyze the reported cluster of civic issues and write a precise 3-4 sentence Systemic Risk Bulletin containing a root-cause hypothesis and coordination recommendation.",
+        temperature: 0.2
+      }
+    };
+
+    const modelsToTry = [
+      "gemini-2.0-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest"
+    ];
+
+    const resultObj = await callGeminiAdaptive(
+      ai,
+      {
+        contents: promptText,
+        ...requestConfig
+      },
+      modelsToTry
+    );
+
+    const bulletinText = resultObj.response?.text?.trim() || "";
+    if (!bulletinText) {
+      throw new Error("Empty text returned from Gemini");
+    }
+
+    return {
+      bulletin: bulletinText,
+      isStub: false
+    };
+  } catch (err: any) {
+    console.warn("[CivicEngine] Systemic bulletin generation failed, falling back to stub:", err?.message || String(err));
+    return {
+      bulletin: generateSystemicBulletinStub(wardName, category, count),
+      isStub: true
+    };
+  }
+}
+
+function generateSystemicBulletinStub(wardName: string, category: string, count: number): string {
+  const catLower = category.toLowerCase();
+  if (catLower.includes('road') || catLower.includes('pothole') || catLower.includes('water') || catLower.includes('drainage') || catLower.includes('sewage')) {
+    return `${wardName}: Concentrated cluster of ${count} reports relating to road surfaces and drainage in a 14-day window point to a shared underground drain or main water pipeline leakage causing soil erosion and subsequent surface collapses. We highly recommend a coordinated subterranean engineering inspection and joint utility review rather than executing isolated, superficial road patch-ups. This unified approach will permanently resolve the underlying hydraulic failure.`;
+  }
+  if (catLower.includes('light') || catLower.includes('electrical')) {
+    return `${wardName}: Multi-point streetlighting failures (${count} reports) in close temporal proximity suggest a localized low-voltage power distribution fault or a tripped circuit breaker at the sub-station level. Recommend a comprehensive grid audit by the GMC electrical engineering wing instead of addressing individual lamp bulb replacements. This proactive review will prevent recurring circuit outages in the sector.`;
+  }
+  if (catLower.includes('garbage') || catLower.includes('sanitation')) {
+    return `${wardName}: Increased sanitation complaints (${count} reports) within a 14-day window indicate a localized logistics failure in the solid waste collection route or a severe capacity bottleneck at the primary collection dumpsters. We recommend a sanitation fleet reallocation review and rescheduling of daily container pickups during peak hours. Addressing this systemic scheduling lag will prevent recurring trash overflow.`;
+  }
+  return `${wardName}: A systemic concentration of ${count} active ${category} issues has been flagged by the AI Watchdog within a rolling 14-day window. This pattern suggests a shared localized operational deficit or infrastructural stress point in the ward area. We strongly recommend a unified cross-departmental onsite inspection and direct coordinator oversight to resolve these related reports concurrently rather than treating them as unrelated singular events.`;
+}
+
+export async function generateTicketChatResponse(params: {
+  ticket: any;
+  message: string;
+  history: { role: 'user' | 'model'; text: string }[];
+}): Promise<{ response: string; isStub?: boolean }> {
+  const { ticket, message, history } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
+
+  if (isOfflineMode) {
+    return {
+      response: "AI is busy — try again in a moment",
+      isStub: true
+    };
+  }
+
+  try {
+    const ticketContext = JSON.stringify({
+      referenceId: ticket.referenceId || ticket.id,
+      category: ticket.category,
+      severity: ticket.severity,
+      department: ticket.department,
+      officer: ticket.officer,
+      status: ticket.status,
+      loggedDate: new Date(ticket.createdAt).toISOString(),
+      actionTimeline: ticket.actionTimeline || [],
+      escalationNotice: ticket.escalationNotice || null,
+      coWitnessCount: (ticket.coWitnesses || []).length,
+    }, null, 2);
+
+    const historyFormatted = history.map(h => `${h.role === 'user' ? 'Citizen' : 'NagarMitra Agent'}: ${h.text}`).join('\n');
+
+    const promptText = `You are "NagarMitra Desk Assistant", an interactive municipal ticket chatbot helping Gandhinagar citizens understand the status of their civic issues.
+
+FULL TICKET GROUNDING CONTEXT:
+${ticketContext}
+
+CONVERSATION HISTORY (if any):
+${historyFormatted}
+
+CITIZEN QUESTION:
+${message}
+
+STRICT INSTRUCTIONS:
+1. Ground your answer strictly in the provided FULL TICKET GROUNDING CONTEXT.
+2. Reply in plain, citizen-friendly, warm, reassuring, and highly specific language. Explain the current status, what has happened (refer to the timeline, including any watchdog escalations or notices), and what the expected next step is.
+3. You MUST reply in the SAME language the citizen used to ask the question (e.g. English, Hindi/हिंदी, or Gujarati/ગુજરાતી). If they ask in Hindi, write the response entirely in Hindi. If in Gujarati, write in Gujarati. If in English, write in English.
+4. Keep the response to 3-4 concise and helpful sentences. Do NOT use markdown headers, bullet lists, or bold keys outside natural prose.
+5. Do NOT invent or hallucinate dates, officers, or events that are not explicitly stated in the context or timeline. If asked about something not in the context, politely explain in their language that you do not have that specific information.`;
+
+    const requestConfig = {
+      config: {
+        systemInstruction: "You are the NagarMitra Desk Assistant. You answer citizens' questions about their ticket's status and actions in a friendly, helpful, and grounded manner, translating to their language (English/Hindi/Gujarati) automatically.",
+        temperature: 0.3
+      }
+    };
+
+    const modelsToTry = [
+      "gemini-2.0-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest"
+    ];
+
+    const resultObj = await callGeminiAdaptive(
+      ai,
+      {
+        contents: promptText,
+        ...requestConfig
+      },
+      modelsToTry
+    );
+
+    const text = resultObj.response?.text?.trim() || "";
+    if (!text) {
+      throw new Error("Empty response from Gemini");
+    }
+
+    return {
+      response: text,
+      isStub: false
+    };
+  } catch (err: any) {
+    console.warn("[CivicEngine] Ticket status chat generation failed, falling back to rate limit message:", err?.message || String(err));
+    return {
+      response: "AI is busy — try again in a moment",
+      isStub: true
+    };
+  }
+}
+
+function parseAudioDataUrl(dataUrl: string) {
+  const matches = dataUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+  if (!matches) {
+    return null;
+  }
+  return {
+    mimeType: matches[1],
+    data: matches[2]
+  };
+}
+
+export async function transcribeAudio(params: {
+  audioData: string;
+  mimeType?: string;
+}): Promise<string> {
+  const { audioData, mimeType } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "DummyKey" || apiKey.includes("dummy")) {
+    console.log("[CivicEngine] Transcribe running in offline fallback mode");
+    return "";
+  }
+
+  // Use the latest dynamic apiKey for the client
+  const aiClientHonored = new GoogleGenAI({
+    apiKey: apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+
+  let data = audioData;
+  let resolvedMimeType = mimeType || "audio/webm";
+
+  if (audioData.startsWith("data:")) {
+    const parsed = parseAudioDataUrl(audioData);
+    if (parsed) {
+      resolvedMimeType = parsed.mimeType;
+      data = parsed.data;
+    }
+  }
+
+  const audioPart = {
+    inlineData: {
+      mimeType: resolvedMimeType,
+      data: data
+    }
+  };
+
+  const promptText = `Please transcribe this audio recording of a citizen reporting a civic issue. 
+The citizen might speak in English, Hindi (हिंदी), or Gujarati (ગુજરાતી).
+You MUST transcribe the words exactly as spoken, retaining the spoken language (e.g., if they speak in Gujarati, transcribe it in Gujarati script; if they speak in Hindi, transcribe it in Hindi Devnagari script; if they speak in English, transcribe it in English).
+Output ONLY the clean text transcript. Do not add any metadata, introductions, explanations, formatting, or extra text.`;
+
+  try {
+    const resultObj = await callGeminiAdaptive(
+      aiClientHonored,
+      {
+        contents: [audioPart, { text: promptText }],
+        config: {
+          temperature: 0.1
+        }
+      },
+      ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    );
+
+    const text = resultObj.response?.text?.trim() || "";
+    return text;
+  } catch (err: any) {
+    console.error("[CivicEngine] Transcription failed:", err);
+    throw err;
+  }
+}
+
+export async function generateCivicHealthPrediction(params: {
+  atRiskWardsSummary: string;
+}): Promise<{ prediction: string; isStub?: boolean }> {
+  const { atRiskWardsSummary } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
+
+  if (isOfflineMode) {
+    return {
+      prediction: "AI-predicted: Sector 4 (Ward 4) is at risk of further degradation due to high unresolved streetlight reports combined with increased evening monsoon rains, which may compromise safety this week.",
+      isStub: true
+    };
+  }
+
+  try {
+    const promptText = `Analyze these municipal ward health metrics and generate a short predictive note (2-3 sentences total) forecasting which ward is most likely to degrade next and why.
+Wards with lowest health scores and highest risks:
+${atRiskWardsSummary}
+
+Please write a highly realistic, concise predictive summary. Mention the ward name clearly, the main indicators of risk (e.g., rising report velocity, aged open tickets, severity), and a possible real-world trigger (e.g., upcoming monsoon season, electrical grid strain, high traffic).
+
+STRICT constraints:
+- Speak in the objective tone of an urban planning data analyst.
+- Keep it to 2-3 sentences max.
+- Do NOT use markdown bolding, lists, headers, or bullet points. Start with "AI-predicted: " in your prose.`;
+
+    const requestConfig = {
+      config: {
+        systemInstruction: "You are an Urban Planning and Civic Analytics Specialist. Analyze the provided ward risk data and write a precise 2-3 sentence prediction forecasting which ward will degrade next and why, prefixed with 'AI-predicted:'.",
+        temperature: 0.3
+      }
+    };
+
+    const modelsToTry = [
+      "gemini-2.0-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest"
+    ];
+
+    const resultObj = await callGeminiAdaptive(
+      ai,
+      {
+        contents: promptText,
+        ...requestConfig
+      },
+      modelsToTry
+    );
+
+    const predictionText = resultObj.response?.text?.trim() || "";
+    if (!predictionText) {
+      throw new Error("Empty text returned from Gemini");
+    }
+
+    return {
+      prediction: predictionText.startsWith("AI-predicted:") ? predictionText : `AI-predicted: ${predictionText}`,
+      isStub: false
+    };
+  } catch (err: any) {
+    console.warn("[CivicEngine] Civic health prediction generation failed, falling back to stub:", err?.message || String(err));
+    return {
+      prediction: "AI-predicted: Sector 4 (Ward 4) is at risk of further degradation due to high unresolved streetlight reports combined with increased evening monsoon rains, which may compromise safety this week.",
+      isStub: true
+    };
+  }
+}
+
+export async function generateNagarMitraChatResponse(params: {
+  message: string;
+  history?: { role: 'user' | 'model'; text: string }[];
+  ticketContext?: string | null;
+}): Promise<{ response: string; reply: string; isStub?: boolean; sources?: Array<{ title: string; uri: string }> }> {
+  const { message, history, ticketContext } = params;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
+
+  if (isOfflineMode) {
+    return {
+      response: "Hello! I am NagarMitra, your civic assistant. Currently, I am in offline simulation mode. To file a civic complaint in Gandhinagar, please use the 'Report Issue' tab. You can track your ticket, use your RTI rights under the RTI Act 2005, or escalate issues to SWAGAT 2.0. Feel free to ask me anything about Gandhinagar municipal procedures!",
+      reply: "Hello! I am NagarMitra, your civic assistant. Currently, I am in offline simulation mode. To file a civic complaint in Gandhinagar, please use the 'Report Issue' tab. You can track your ticket, use your RTI rights under the RTI Act 2005, or escalate issues to SWAGAT 2.0. Feel free to ask me anything about Gandhinagar municipal procedures!",
+      isStub: true,
+      sources: []
+    };
+  }
+
+  // Define system instruction and search grounding configuration
+  const systemInstruction = "You are NagarMitra, a civic assistant for Gandhinagar Municipal Corporation. Answer questions about GMC procedures, RTI Act 2005, SWAGAT 2.0, CPGRAMS, and municipal services. Reply in the same language the user used.";
+  const config = {
+    systemInstruction,
+    temperature: 0.5,
+    tools: [{ googleSearch: {} }]
+  };
+
+  // Build the message prompt (with optional ticketContext prepended)
+  let userPrompt = "";
+  if (ticketContext) {
+    userPrompt += `CIVIC TICKETS GROUNDING CONTEXT (FROM FIRESTORE):\n${ticketContext}\n\n`;
+  }
+  userPrompt += `CURRENT CITIZEN MESSAGE:\n${message}`;
+
+  let responseText = "";
+  const sources: Array<{ title: string; uri: string }> = [];
+
+  const tryWithContents = async (contentsPayload: any): Promise<boolean> => {
+    try {
+      console.log(`[CivicEngine] Calling Gemini model "gemini-2.0-flash" with ${contentsPayload.length} content items...`);
+      const result = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: contentsPayload,
+        config
+      });
+
+      if (result && result.text) {
+        responseText = result.text.trim();
+        const searchGroundingMetadata = result.candidates?.[0]?.groundingMetadata;
+        const chunks = searchGroundingMetadata?.groundingChunks;
+        if (Array.isArray(chunks)) {
+          for (const chunk of chunks) {
+            if (chunk.web?.uri && isValidUrl(chunk.web.uri)) {
+              sources.push({
+                title: chunk.web.title || chunk.web.uri,
+                uri: chunk.web.uri
+              });
+            }
+          }
+        }
+        return true;
+      }
+    } catch (err: any) {
+      console.warn(`[CivicEngine] Gemini call failed for current payload:`, err?.message || String(err));
+    }
+    return false;
+  };
+
+  let success = false;
+  if (history && history.length > 0) {
+    try {
+      const contentsPayload = history.map(h => ({
+        role: h.role === 'user' ? 'user' : 'model',
+        parts: [{ text: h.text }]
+      }));
+      contentsPayload.push({
+        role: 'user',
+        parts: [{ text: userPrompt }]
+      });
+      success = await tryWithContents(contentsPayload);
+    } catch (historyErr) {
+      console.warn("[CivicEngine] History conversion/payload building threw:", historyErr);
+    }
+  }
+
+  if (!success) {
+    console.log("[CivicEngine] Retrying Gemini call with empty history (only current message)...");
+    const fallbackPayload = [
+      {
+        role: 'user',
+        parts: [{ text: userPrompt }]
+      }
+    ];
+    success = await tryWithContents(fallbackPayload);
+  }
+
+  if (success && responseText) {
+    return {
+      response: responseText,
+      reply: responseText,
+      isStub: false,
+      sources
+    };
+  }
+
+  throw new Error("I'm having difficulties processing your request right now. Please try again in a moment.");
+}
+
+
+

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MapPin, Info, ArrowRight, Settings, Filter, RefreshCw, X, Sparkles } from 'lucide-react';
 import { CivicReport, CATEGORIES, GANDHINAGAR_WARDS } from '../types';
+import { getProxiedImageUrl } from '../utils/imageUtils';
 
 interface CivicMapProps {
   reports: CivicReport[];
@@ -258,9 +259,14 @@ export default function CivicMap({ reports, onSelectReport }: CivicMapProps) {
               >
                 {/* Micro thumbnail */}
                 <img
-                  src={report.photoUrl}
+                  src={getProxiedImageUrl(report.photoUrl)}
                   alt={report.category}
+                  referrerPolicy="no-referrer"
                   className="w-12 h-12 rounded-xl object-cover flex-shrink-0 border border-[#e2e2d5]"
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100%' height='100%' fill='%23e2e2d5'/></svg>";
+                  }}
                 />
                 
                 <div className="flex-1 min-w-0">

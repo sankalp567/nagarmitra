@@ -1,7 +1,7 @@
 import { collection, getDocs, addDoc, doc, updateDoc, query, orderBy, arrayUnion } from 'firebase/firestore';
 import { db, auth, ensureAnonymousAuth } from '../firebase';
 import { CivicReport, IssueStatus, ActionTimelineEntry } from '../types';
-import { INITIAL_REPORTS } from '../data/mockData';
+import { INITIAL_REPORTS, getSvgDataUriForCategory } from '../data/mockData';
 
 const STORAGE_KEY = 'nagarmitra_reports';
 
@@ -69,16 +69,22 @@ export function sanitizeReport(data: any, fallbackId?: string): Omit<CivicReport
     }
   }
 
+  let photoUrl = data.photoUrl || '';
+  const category = data.category || 'Others';
+  if (!photoUrl || (typeof photoUrl === 'string' && photoUrl.startsWith('http') && (photoUrl.includes('wikimedia.org') || photoUrl.includes('c8.alamy.com') || photoUrl.includes('alamy.com')))) {
+    photoUrl = getSvgDataUriForCategory(category);
+  }
+
   return {
     referenceId,
-    photoUrl: data.photoUrl || '',
+    photoUrl,
     geo: {
       lat: Number(data.geo?.lat) || 23.2156,
       lng: Number(data.geo?.lng) || 72.6369,
       ward: data.geo?.ward || 'ward_01',
       wardName: data.geo?.wardName || 'Ward 1'
     },
-    category: data.category || 'Others',
+    category,
     severity: Number(data.severity) || 3,
     aiAnalysis: {
       description: data.aiAnalysis?.description || '',
@@ -141,7 +147,39 @@ export function saveLocalReports(reports: CivicReport[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(reports));
   } catch (e) {
-    console.error("Local storage write failure:", e);
+    console.warn("[reportStore] Local storage write failed, attempting to prune large images to fit quota:", e);
+    try {
+      // Create a copy of the reports to prune
+      const prunedReports = reports.map((r, index) => {
+        // If the photoUrl is a base64 string and this is not one of the 2 most recent reports, replace with a standard lightweight placeholder
+        if (r.photoUrl && r.photoUrl.startsWith('data:') && index >= 2) {
+          return {
+            ...r,
+            photoUrl: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?auto=format&fit=crop&w=600&q=80"
+          };
+        }
+        return r;
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(prunedReports));
+      console.log("[reportStore] Successfully saved reports to LocalStorage after pruning older base64 images.");
+    } catch (e2) {
+      console.error("[reportStore] Pruning base64 images still exceeded quota. Slicing reports to latest 15 and removing all base64:", e2);
+      try {
+        const ultraPruned = reports.slice(0, 15).map(r => {
+          if (r.photoUrl && r.photoUrl.startsWith('data:')) {
+            return {
+              ...r,
+              photoUrl: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?auto=format&fit=crop&w=600&q=80"
+            };
+          }
+          return r;
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(ultraPruned));
+        console.log("[reportStore] Successfully saved ultra-pruned reports to LocalStorage.");
+      } catch (e3) {
+        console.error("[reportStore] Completely failed to write to local storage even with ultra-pruned list:", e3);
+      }
+    }
   }
 }
 
@@ -152,17 +190,17 @@ export async function fetchReports(): Promise<CivicReport[]> {
   }
 
   try {
-    await ensureAnonymousAuth();
-    let querySnapshot;
-    try {
+    const fetchPromise = (async () => {
+      await ensureAnonymousAuth();
       const q = query(collection(db, 'reports'), orderBy('createdAt', 'desc'));
-      querySnapshot = await getDocs(q);
-    } catch (error: any) {
-      if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
-        handleFirestoreError(error, OperationType.LIST, 'reports');
-      }
-      throw error;
-    }
+      return await getDocs(q);
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("Firestore fetch timeout (15s exceeded)")), 15000);
+    });
+
+    const querySnapshot = await Promise.race([fetchPromise, timeoutPromise]);
 
     const serverReports: CivicReport[] = [];
     
@@ -183,19 +221,31 @@ export async function fetchReports(): Promise<CivicReport[]> {
       // Seed Firestore if empty with some base examples
       console.log("Firestore reports collection empty. Seeding with default data.");
       const localReports = getLocalReports();
-      for (const rep of localReports) {
-        const { id, ...cleanRep } = rep;
-        const sanitized = sanitizeReport(cleanRep, rep.id);
-        try {
-          await addDoc(collection(db, 'reports'), sanitized);
-        } catch (error: any) {
-          if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
-            handleFirestoreError(error, OperationType.CREATE, 'reports');
+      try {
+        const seedPromises = localReports.map(async (rep) => {
+          const { id, ...cleanRep } = rep;
+          const sanitized = sanitizeReport(cleanRep, rep.id);
+          try {
+            await addDoc(collection(db, 'reports'), sanitized);
+          } catch (err: any) {
+            if (err?.code === 'permission-denied' || err?.message?.includes('permission') || err?.message?.includes('Permission')) {
+              handleFirestoreError(err, OperationType.CREATE, 'reports');
+            }
+            throw err;
           }
-          throw error;
-        }
+        });
+
+        const seedTimeout = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Firestore seeding timed out (8s exceeded)")), 8000);
+        });
+
+        await Promise.race([Promise.all(seedPromises), seedTimeout]);
+        console.log("Firestore database seeded successfully with mock data.");
+        return fetchReports(); // Fetch again after successful seeding
+      } catch (seedError) {
+        console.warn("Firestore seeding failed or timed out, proceeding with local reports:", seedError);
+        return localReports;
       }
-      return fetchReports(); // Fetch again after seeding
     }
 
     return serverReports;
@@ -207,7 +257,15 @@ export async function fetchReports(): Promise<CivicReport[]> {
 
 export async function createReport(reportData: Omit<CivicReport, 'id'>): Promise<CivicReport> {
   // Ensure anonymous auth beforehand
-  await ensureAnonymousAuth();
+  try {
+    const authPromise = ensureAnonymousAuth();
+    const authTimeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("Anonymous Auth timeout (10s exceeded)")), 10000);
+    });
+    await Promise.race([authPromise, authTimeout]);
+  } catch (authError) {
+    console.warn("Auth check timed out or failed, continuing report creation flow:", authError);
+  }
 
   const sanitized = sanitizeReport(reportData);
 
@@ -226,7 +284,11 @@ export async function createReport(reportData: Omit<CivicReport, 'id'>): Promise
   try {
     let docRef;
     try {
-      docRef = await addDoc(collection(db, 'reports'), sanitized);
+      const createPromise = addDoc(collection(db, 'reports'), sanitized);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Firestore addDoc timeout (15s exceeded)")), 15000);
+      });
+      docRef = await Promise.race([createPromise, timeoutPromise]);
     } catch (error: any) {
       if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
         handleFirestoreError(error, OperationType.CREATE, 'reports');
@@ -290,6 +352,41 @@ export async function updateReportStatus(reportId: string, status: IssueStatus):
       return true;
     }
     return false;
+  }
+}
+
+export async function updateReportReasoning(
+  reportId: string,
+  reasoning: {
+    classificationReasoning: string;
+    alternativeCategories: string;
+    severityFactors: string;
+  }
+): Promise<boolean> {
+  const local = getLocalReports();
+  const index = local.findIndex(r => r.id === reportId);
+  if (index !== -1) {
+    local[index].classificationReasoning = reasoning.classificationReasoning;
+    local[index].alternativeCategories = reasoning.alternativeCategories;
+    local[index].severityFactors = reasoning.severityFactors;
+    saveLocalReports(local);
+  }
+
+  if (!db || reportId.startsWith('rep_')) {
+    return index !== -1;
+  }
+
+  try {
+    const docRef = doc(db, 'reports', reportId);
+    await updateDoc(docRef, {
+      classificationReasoning: reasoning.classificationReasoning,
+      alternativeCategories: reasoning.alternativeCategories,
+      severityFactors: reasoning.severityFactors
+    });
+    return true;
+  } catch (error) {
+    console.error("Firestore reasoning update failed:", error);
+    return index !== -1;
   }
 }
 

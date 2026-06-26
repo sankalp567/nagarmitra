@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInAnonymously } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore } from 'firebase/firestore';
 import { getStorage, ref, uploadString, getDownloadURL } from 'firebase/storage';
 import configJson from '../firebase-applet-config.json';
 
@@ -29,11 +29,15 @@ if (hasValidConfig) {
     // Use named database ID if present, else default
     const dbId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID as string) || configJson.firestoreDatabaseId || '';
     if (dbId) {
-      db = getFirestore(app, dbId);
-      console.log(`[Firebase] Initialized with named Firestore Database ID: "${dbId}"`);
+      db = initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true
+      }, dbId);
+      console.log(`[Firebase] Initialized with named Firestore Database ID: "${dbId}" (auto-detect long-polling enabled)`);
     } else {
-      db = getFirestore(app);
-      console.log(`[Firebase] Initialized with default Firestore Database`);
+      db = initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true
+      });
+      console.log(`[Firebase] Initialized with default Firestore Database (auto-detect long-polling enabled)`);
     }
     storage = getStorage(app);
   } catch (error) {
@@ -48,7 +52,11 @@ export async function ensureAnonymousAuth() {
   if (!auth) return null;
   try {
     if (!auth.currentUser) {
-      const userCredential = await signInAnonymously(auth);
+      const authPromise = signInAnonymously(auth);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Anonymous Auth timeout (3s)")), 3000);
+      });
+      const userCredential = await Promise.race([authPromise, timeoutPromise]);
       return userCredential.user;
     }
     return auth.currentUser;

@@ -1,7 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Camera, Upload, MapPin, AlertCircle, CheckCircle2, Loader2, Sparkles, Navigation, ChevronRight, CornerDownRight, ChevronDown, ChevronUp, HelpCircle } from 'lucide-react';
-import { createReport, getLocalReports, saveLocalReports, fetchReports, addCoWitness } from '../utils/reportStore';
+import { Camera, Upload, MapPin, AlertCircle, CheckCircle2, Loader2, Sparkles, Navigation, ChevronRight, CornerDownRight, ChevronDown, ChevronUp, HelpCircle, Mic, Square, AlertTriangle } from 'lucide-react';
+import { createReport, getLocalReports, saveLocalReports, fetchReports, addCoWitness, updateReportReasoning } from '../utils/reportStore';
+import { getProxiedImageUrl } from '../utils/imageUtils';
+import { getSvgDataUriForCategory } from '../data/mockData';
 import { uploadPhotoToStorage, compressImage, auth, db } from '../firebase';
 import { CivicReport, CATEGORIES, GANDHINAGAR_WARDS } from '../types';
 
@@ -9,32 +11,41 @@ import { CivicReport, CATEGORIES, GANDHINAGAR_WARDS } from '../types';
 const SAMPLE_PRESETS = [
   {
     name: 'Sector 3 Pothole',
-    url: 'https://images.unsplash.com/photo-1515162305285-0293e4767cc2?auto=format&fit=crop&w=600&q=80',
+    url: getSvgDataUriForCategory('Potholes & Roads'),
     defaultNote: 'A deep pothole here is causing vehicles to swerve dangerously.',
     lat: 23.2172,
     lng: 72.6385,
   },
   {
-    name: 'Sector 17 Overflowing Garbage',
-    url: 'https://images.unsplash.com/photo-1611284446314-60a58ac0deb9?auto=format&fit=crop&w=600&q=80',
-    defaultNote: 'The trash dumpsters at Sector 17 main market have overflowed onto the road.',
+    name: 'Sector 17 Overflow',
+    url: getSvgDataUriForCategory('Drainage & Flooding'),
+    defaultNote: 'Severe drainage overflow and waterlogging has flooded the walkways and streets in Sector 17 market.',
     lat: 23.2215,
     lng: 72.6482,
   },
   {
     name: 'Kudasan Dark Streetlight',
-    url: 'https://images.unsplash.com/photo-1509395062183-67c5ad6faff9?auto=format&fit=crop&w=600&q=80',
+    url: getSvgDataUriForCategory('Streetlights'),
     defaultNote: 'No lights are working along Kudasan link road. It is pitch dark and dangerous.',
     lat: 23.1895,
     lng: 72.6288,
   },
   {
     name: 'Infocity Pipeline Leak',
-    url: 'https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=600&q=80',
+    url: getSvgDataUriForCategory('Water Supply & Sewage'),
     defaultNote: 'Clean drinking water has been spraying out of this valve on the footpath.',
     lat: 23.2354,
     lng: 72.6598,
   }
+];
+
+const DEMO_WARD_CENTERS = [
+  { id: 'ward_01', name: 'Ward 1 (Sectors 1-7)', lat: 23.2450, lng: 72.6450 },
+  { id: 'ward_02', name: 'Ward 2 (Sectors 8-14)', lat: 23.2300, lng: 72.6300 },
+  { id: 'ward_03', name: 'Ward 3 (Sectors 15-21)', lat: 23.2215, lng: 72.6482 },
+  { id: 'ward_04', name: 'Ward 4 (Sectors 22-30)', lat: 23.2050, lng: 72.6200 },
+  { id: 'ward_05', name: 'Ward 5 (Kudasan & Sargasan)', lat: 23.1850, lng: 72.6150 },
+  { id: 'ward_06', name: 'Ward 6 (Infocity & Indroda)', lat: 23.2000, lng: 72.6450 },
 ];
 
 interface ReportIssueProps {
@@ -56,6 +67,267 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
   const [duplicateFound, setDuplicateFound] = useState<boolean>(false);
   const [duplicateMessage, setDuplicateMessage] = useState<string>('');
   const [isWhyClassificationOpen, setIsWhyClassificationOpen] = useState<boolean>(false);
+
+  // New states for geographic boundary checking
+  const [showBoundaryAlert, setShowBoundaryAlert] = useState<boolean>(false);
+  const [detectedOffLimitsCoords, setDetectedOffLimitsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [selectedDemoWard, setSelectedDemoWard] = useState<{ id: string; name: string; lat: number; lng: number } | null>(null);
+
+  // HMAC Session Token implementation
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+
+  const fetchSessionToken = async (): Promise<string | null> => {
+    try {
+      const response = await fetch('/api/token');
+      if (response.ok) {
+        const data = await response.json();
+        setSessionToken(data.token);
+        console.log("[Token System] Session token acquired successfully.");
+        return data.token;
+      }
+    } catch (err) {
+      console.error("[Token System] Failed to fetch session token:", err);
+    }
+    return null;
+  };
+
+  React.useEffect(() => {
+    fetchSessionToken();
+    const interval = setInterval(() => {
+      console.log("[Token System] Refreshing session token before expiry...");
+      fetchSessionToken();
+    }, 25 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Poll for reasoning fields in ReportIssue success screen
+  React.useEffect(() => {
+    if (!resultReport) return;
+
+    const hasReasoning = resultReport.classificationReasoning && resultReport.alternativeCategories && resultReport.severityFactors;
+    if (hasReasoning) return;
+
+    let isMounted = true;
+    let pollCount = 0;
+    const maxPolls = 10;
+    const pollInterval = 3000; // 3 seconds
+
+    const poll = async () => {
+      try {
+        pollCount++;
+        console.log(`[ReportIssue Reasoning Polling] Checking reasoning for ticket ${resultReport.id}, attempt #${pollCount}...`);
+
+        const response = await fetch(`/api/reasoning/${resultReport.referenceId || resultReport.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: resultReport.category,
+            severity: resultReport.severity,
+            hazards: resultReport.aiAnalysis?.hazards || [],
+            description: resultReport.aiAnalysis?.description || '',
+            userNote: resultReport.note || ''
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!isMounted) return;
+
+        if (data.success && data.status === 'completed' && data.result) {
+          console.log("[ReportIssue Reasoning Polling] Succeeded! Updating reasoning fields:", data.result);
+          // 1. Update report store
+          await updateReportReasoning(resultReport.id, data.result);
+          
+          // 2. Update local state
+          const updatedReport = {
+            ...resultReport,
+            ...data.result
+          };
+          setResultReport(updatedReport);
+          
+          // 3. Update parent/app state
+          onReportCreated(updatedReport);
+          return; // Stop polling
+        }
+
+        if (pollCount < maxPolls) {
+          setTimeout(poll, pollInterval);
+        }
+      } catch (err) {
+        console.warn("[ReportIssue Reasoning Polling] Attempt failed:", err);
+        if (isMounted && pollCount < maxPolls) {
+          setTimeout(poll, pollInterval);
+        }
+      }
+    };
+
+    const timer = setTimeout(poll, 1500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [resultReport?.id, resultReport?.referenceId]);
+
+  // Voice recording and transcribing states using browser Web Speech API
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
+  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
+  const [showConfirmTranscript, setShowConfirmTranscript] = useState<boolean>(false);
+  const [tempTranscript, setTempTranscript] = useState<string>('');
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [micPermissionStatus, setMicPermissionStatus] = useState<string>('prompt');
+  const [activeLang, setActiveLang] = useState<'EN' | 'HI' | 'GU'>('EN');
+  const [isSpeechSupported, setIsSpeechSupported] = useState<boolean>(true);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  // Proactively check browser microphone permission and SpeechRecognition support on mount
+  React.useEffect(() => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
+      setIsSpeechSupported(false);
+    }
+
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'microphone' as any })
+        .then((status) => {
+          setMicPermissionStatus(status.state);
+          status.onchange = () => {
+            setMicPermissionStatus(status.state);
+          };
+        })
+        .catch((err) => console.warn("Microphone permission query not fully supported:", err));
+    }
+  }, []);
+
+  const startVoiceRecording = async () => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
+      setRecordingError("Voice input requires Chrome — type instead");
+      setIsSpeechSupported(false);
+      return;
+    }
+
+    try {
+      setRecordingError(null);
+      setRecordingSeconds(0);
+      setTempTranscript('');
+      setShowConfirmTranscript(false);
+
+      // Request microphone permission explicitly
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicPermissionStatus('granted');
+      stream.getTracks().forEach(track => track.stop());
+
+      const recognition = new SpeechRecognitionAPI();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+
+      // Map activeLang to Web Speech language codes
+      let langCode = 'en-IN';
+      if (activeLang === 'HI') {
+        langCode = 'hi-IN';
+      } else if (activeLang === 'GU') {
+        langCode = 'gu-IN';
+      }
+      recognition.lang = langCode;
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+        }
+        timerRef.current = setInterval(() => {
+          setRecordingSeconds((prev) => prev + 1);
+        }, 1000);
+      };
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+
+        const currentText = finalTranscript || interimTranscript;
+        setTempTranscript(currentText);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'not-allowed') {
+          setMicPermissionStatus('denied');
+          setRecordingError("Microphone access is required to speak your complaint. Please verify permissions.");
+        } else {
+          setRecordingError(`Speech recognition error: ${event.error}`);
+        }
+        stopVoiceRecordingInternal(recognition);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        setShowConfirmTranscript(true);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+
+    } catch (err: any) {
+      console.error("Microphone access denied or unsupported:", err);
+      setMicPermissionStatus('denied');
+      setRecordingError("Microphone access is required to speak your complaint. Please verify permissions.");
+    }
+  };
+
+  const stopVoiceRecordingInternal = (rec: any) => {
+    try {
+      rec.stop();
+    } catch (e) {}
+    setIsRecording(false);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+    }
+    setIsRecording(false);
+    setShowConfirmTranscript(true);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const confirmTranscript = () => {
+    setNote(tempTranscript);
+    setShowConfirmTranscript(false);
+    setTempTranscript('');
+  };
+
+  const cancelConfirmTranscript = () => {
+    setShowConfirmTranscript(false);
+    setTempTranscript('');
+    startVoiceRecording();
+  };
 
   // Manual map-pin coordinate adjusts
   const [manualLat, setManualLat] = useState<string>('23.2156');
@@ -91,11 +363,22 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        setGpsLocation({ lat: latitude, lng: longitude });
-        setManualLat(latitude.toFixed(5));
-        setManualLng(longitude.toFixed(5));
-        setLocationStatus('GPS Lock acquired successfully.');
-        setIsLocating(false);
+        const dist = getHaversineDistance(latitude, longitude, 23.2156, 72.6369);
+        
+        if (dist > 20000) { // 20 km boundary check
+          setDetectedOffLimitsCoords({ lat: latitude, lng: longitude });
+          setShowBoundaryAlert(true);
+          setLocationStatus('GPS acquired but is outside GMC limits.');
+          setIsLocating(false);
+        } else {
+          setGpsLocation({ lat: latitude, lng: longitude });
+          setManualLat(latitude.toFixed(5));
+          setManualLng(longitude.toFixed(5));
+          setLocationStatus('GPS Lock acquired successfully.');
+          setSelectedDemoWard(null); // Clear demo mode on valid GPS lock
+          setShowBoundaryAlert(false);
+          setIsLocating(false);
+        }
       },
       (error) => {
         console.warn("Geolocation error:", error);
@@ -110,6 +393,24 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
       },
       { enableHighAccuracy: true, timeout: 5000 }
     );
+  };
+
+  const handleSelectDemoWard = (ward: typeof DEMO_WARD_CENTERS[0]) => {
+    setSelectedDemoWard(ward);
+    setGpsLocation({ lat: ward.lat, lng: ward.lng });
+    setManualLat(ward.lat.toFixed(5));
+    setManualLng(ward.lng.toFixed(5));
+    setLocationStatus(`GPS Override: ${ward.name} (Demo mode)`);
+    setShowBoundaryAlert(false);
+  };
+
+  const handleCancelBoundaryAlert = () => {
+    setShowBoundaryAlert(false);
+    setDetectedOffLimitsCoords(null);
+    setGpsLocation(null);
+    setManualLat('23.2156');
+    setManualLng('72.6369');
+    setLocationStatus('Location selection cancelled.');
   };
 
   // Image upload handling
@@ -171,7 +472,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
   // Submission Pipeline trigger
   const handleSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!photoUrl) return;
+    if (!photoUrl && !note.trim()) return;
 
     setIsSubmitting(true);
     setResultReport(null);
@@ -190,11 +491,14 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
     let generatedData: any = null;
 
     try {
-      // Step 0: Compress photo ONCE at the very start to max ~900px, JPEG quality ~0.6
-      console.log("[Pipeline] Compressing photo once before initiating pipeline...");
-      const compressedUrl = photoUrl.startsWith('data:') 
-        ? await compressImage(photoUrl, 900, 900, 0.6) 
-        : photoUrl;
+      // Step 0: Compress photo ONCE at the very start to max ~900px, JPEG quality ~0.6 if present
+      let compressedUrl = "";
+      if (photoUrl) {
+        console.log("[Pipeline] Compressing photo once before initiating pipeline...");
+        compressedUrl = photoUrl.startsWith('data:') 
+          ? await compressImage(photoUrl, 900, 900, 0.6) 
+          : photoUrl;
+      }
 
       // Step 1: Uploading Photo (Bypassed Firebase Storage upload; instantly ready)
       setPipelineSteps(prev => prev.map(s => s.id === '1' ? { ...s, status: 'running' } : s));
@@ -202,17 +506,27 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       setPipelineSteps(prev => prev.map(s => s.id === '1' ? { 
         ...s, 
         status: 'completed',
-        detail: 'Photo compressed client-side (max 900px, quality 60%). Firebase Storage upload bypassed for optimal speed.'
+        detail: photoUrl 
+          ? 'Photo compressed client-side (max 900px, quality 60%). Firebase Storage upload bypassed for optimal speed.'
+          : 'No photo provided. Reporting in voice/text fallback mode.'
       } : s));
 
       // Step 2: Extracting damages (Call real Gemini API analysis!) - Starts instantly!
       setPipelineSteps(prev => prev.map(s => s.id === '2' ? { ...s, status: 'running' } : s));
       
-      const response = await fetch('/api/analyze', {
+      let tokenToUse = sessionToken;
+      if (!tokenToUse) {
+        tokenToUse = await fetchSessionToken();
+      }
+
+      let response = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Session-Token': tokenToUse || ''
+        },
         body: JSON.stringify({
-          photoUrl: compressedUrl, // Send compressed base64 directly to Gemini
+          photoUrl: compressedUrl, // Send compressed base64 or empty string to Gemini
           note,
           lat: targetLat,
           lng: targetLng,
@@ -220,15 +534,56 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
         })
       });
 
+      if (response.status === 401) {
+        console.warn("[Token System] 401 response detected. Fetching a fresh token and retrying...");
+        const freshToken = await fetchSessionToken();
+        response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-Session-Token': freshToken || ''
+          },
+          body: JSON.stringify({
+            photoUrl: compressedUrl,
+            note,
+            lat: targetLat,
+            lng: targetLng,
+            imageName
+          })
+        });
+      }
+
       const backendData = await response.json();
-      if (!backendData.success) {
-        throw new Error(backendData.error || "Municipal Engine translation failed.");
+      if (response.status >= 400 || !backendData.success) {
+        throw new Error(backendData.message || backendData.error || "Municipal Engine translation failed.");
       }
 
       generatedData = {
         ...backendData.report,
         photoUrl: compressedUrl
       };
+
+      if (selectedDemoWard) {
+        if (!generatedData.geo) {
+          generatedData.geo = {};
+        }
+        const oldWardName = generatedData.geo.wardName || '';
+        generatedData.geo.ward = selectedDemoWard.id;
+        generatedData.geo.wardName = `${selectedDemoWard.name} (manually selected)`;
+
+        const newWardLabel = `${selectedDemoWard.name} (manually selected)`;
+
+        // Replace ward name in complaint texts for consistency
+        if (generatedData.complaintEn && oldWardName) {
+          generatedData.complaintEn = generatedData.complaintEn.split(oldWardName).join(newWardLabel);
+        }
+        if (generatedData.complaintHi && oldWardName) {
+          generatedData.complaintHi = generatedData.complaintHi.split(oldWardName).join(newWardLabel);
+        }
+        if (generatedData.complaintGu && oldWardName) {
+          generatedData.complaintGu = generatedData.complaintGu.split(oldWardName).join(newWardLabel);
+        }
+      }
 
       // Map categories to lowercase codes for the compliance panel
       let inferredTypeCode = "other";
@@ -397,6 +752,9 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
     setDuplicateFound(false);
     setDuplicateMessage('');
     setIsSubmitting(false);
+    setShowBoundaryAlert(false);
+    setDetectedOffLimitsCoords(null);
+    setSelectedDemoWard(null);
     setPipelineSteps([
       { id: '1', label: 'Uploading Photo to Cloud Archive', status: 'pending', detail: 'Compressing and securing upload to Firebase storage.' },
       { id: '2', label: 'Extracting Damages via Gemini Vision', status: 'pending', detail: 'Running object detection for civic safety hazards.' },
@@ -436,7 +794,16 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                 
                 {photoUrl ? (
                   <div className="relative group rounded-2xl overflow-hidden bg-[#fafaf5] border border-[#e2e2d5]">
-                    <img src={photoUrl} alt="Civic issue preview" className="w-full h-56 object-cover" />
+                    <img 
+                      src={getProxiedImageUrl(photoUrl)} 
+                      alt="Civic issue preview" 
+                      referrerPolicy="no-referrer" 
+                      className="w-full h-56 object-cover" 
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='640' height='480'><rect width='100%' height='100%' fill='%23e2e2d5'/></svg>";
+                      }}
+                    />
                     <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
                       <button
                         type="button"
@@ -490,7 +857,16 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                         onClick={() => handleSelectPreset(p)}
                         className="flex items-center gap-2 text-left px-2 sm:px-3 py-1.5 rounded-xl border border-[#e2e2d5] bg-white hover:bg-[#fafaf5] hover:border-[#5a7a5a] transition text-xs font-medium text-[#2d332d] shadow-2xs"
                       >
-                        <img src={p.url} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" alt="" />
+                        <img 
+                          src={getProxiedImageUrl(p.url)} 
+                          className="w-8 h-8 rounded-lg object-cover flex-shrink-0" 
+                          referrerPolicy="no-referrer" 
+                          alt="" 
+                          onError={(e) => {
+                            e.currentTarget.onerror = null;
+                            e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100%' height='100%' fill='%23e2e2d5'/></svg>";
+                          }}
+                        />
                         <span className="truncate">{p.name}</span>
                       </button>
                     ))}
@@ -503,6 +879,50 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                 <label className="block text-xs font-bold uppercase tracking-wider text-[#8a8a7a] mb-2">
                   2. Geo-Location Placement <span className="text-rose-500">*</span>
                 </label>
+
+                {showBoundaryAlert && (
+                  <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 mb-4 shadow-2xs animate-fadeIn text-[#2d332d]">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 animate-bounce" />
+                      <div className="flex-1">
+                        <h4 className="font-extrabold text-xs text-amber-900 uppercase tracking-wider mb-1">
+                          Outside Service Area
+                        </h4>
+                        <p className="text-xs text-amber-800 font-medium leading-relaxed mb-3">
+                          NagarMitra serves Gandhinagar Municipal Corporation. Your location is outside GMC limits.
+                        </p>
+                        
+                        <div className="flex flex-col sm:flex-row gap-3">
+                          <div className="relative flex-1">
+                            <select
+                              onChange={(e) => {
+                                const wardId = e.target.value;
+                                const ward = DEMO_WARD_CENTERS.find(w => w.id === wardId);
+                                if (ward) handleSelectDemoWard(ward);
+                              }}
+                              defaultValue=""
+                              className="w-full text-xs font-bold bg-white border border-amber-200 text-amber-900 rounded-xl px-3 py-2 outline-none focus:border-amber-400 transition"
+                            >
+                              <option value="" disabled>Pick a ward manually (Demo mode)...</option>
+                              {DEMO_WARD_CENTERS.map((w) => (
+                                <option key={w.id} value={w.id}>{w.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          <button
+                            type="button"
+                            onClick={handleCancelBoundaryAlert}
+                            className="px-4 py-2 bg-white border border-amber-200 text-amber-800 hover:bg-amber-100/50 text-xs font-extrabold uppercase tracking-wider rounded-xl transition cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex flex-col sm:flex-row gap-3">
                   <button
                     type="button"
@@ -575,6 +995,160 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                 )}
               </div>
 
+              {/* Voice-First Recording Integration */}
+              <div className="bg-[#fafaf5] border border-[#e2e2d5] rounded-3xl p-5 flex flex-col items-center justify-center relative overflow-hidden transition-all hover:border-[#3a5a40]/30 shadow-2xs">
+                <div className="absolute top-0 left-0 w-1 h-full bg-[#3a5a40]" />
+                
+                {!isSpeechSupported && (
+                  <div className="text-center py-4 flex flex-col items-center">
+                    <AlertCircle className="w-6 h-6 text-amber-500 mb-2" />
+                    <span className="text-xs font-extrabold text-[#1a2e1d] uppercase tracking-wider">
+                      Voice input requires Chrome — type instead
+                    </span>
+                  </div>
+                )}
+
+                {isSpeechSupported && !isRecording && !showConfirmTranscript && (
+                  <div className="text-center py-2 flex flex-col items-center gap-3">
+                    {/* Dynamic Language Selection Toggle */}
+                    <div className="flex bg-white border border-[#e2e2d5] p-1 rounded-xl shadow-2xs mb-1">
+                      <button
+                        type="button"
+                        onClick={() => setActiveLang('EN')}
+                        className={`text-[10px] font-extrabold px-3 py-1.5 rounded-lg transition uppercase tracking-wider cursor-pointer ${
+                          activeLang === 'EN' 
+                            ? 'bg-[#3a5a40] text-white shadow-xs' 
+                            : 'text-[#8a8a7a] hover:text-[#2d332d]'
+                        }`}
+                      >
+                        English
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveLang('HI')}
+                        className={`text-[10px] font-extrabold px-3 py-1.5 rounded-lg transition uppercase tracking-wider cursor-pointer ${
+                          activeLang === 'HI' 
+                            ? 'bg-[#3a5a40] text-white shadow-xs' 
+                            : 'text-[#8a8a7a] hover:text-[#2d332d]'
+                        }`}
+                      >
+                        हिंदी
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveLang('GU')}
+                        className={`text-[10px] font-extrabold px-3 py-1.5 rounded-lg transition uppercase tracking-wider cursor-pointer ${
+                          activeLang === 'GU' 
+                            ? 'bg-[#3a5a40] text-white shadow-xs' 
+                            : 'text-[#8a8a7a] hover:text-[#2d332d]'
+                        }`}
+                      >
+                        ગુજરાતી
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="voice-speak-complaint-btn"
+                      onClick={startVoiceRecording}
+                      className="inline-flex items-center gap-2 px-5 py-3 bg-[#3a5a40] text-white font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-md hover:bg-[#2f4934] transition active:scale-95 cursor-pointer"
+                    >
+                      <Mic className="w-4 h-4 text-white" />
+                      🎤 Speak your complaint
+                    </button>
+                    <p className="text-[10px] text-[#8a8a7a] mt-1 font-medium">
+                      Speak in Hindi (हिंदी), Gujarati (ગુજરાતી), or English for automatic AI transcription.
+                    </p>
+                  </div>
+                )}
+
+                {isSpeechSupported && isRecording && (
+                  <div className="text-center py-3 w-full flex flex-col items-center">
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse" />
+                      <span className="text-[11px] font-extrabold text-rose-600 uppercase tracking-widest">
+                        Recording ({recordingSeconds}s) - {activeLang === 'HI' ? 'हिंदी' : activeLang === 'GU' ? 'ગુજરાતી' : 'English'}
+                      </span>
+                    </div>
+                    
+                    {/* Visual Waveform Effect */}
+                    <div className="flex gap-1 items-center justify-center h-8 my-3">
+                      {[1, 2, 3, 4, 5, 4, 3, 2, 1, 3, 5, 2].map((h, i) => (
+                        <div 
+                          key={i} 
+                          className="w-1 bg-[#3a5a40] rounded-full animate-bounce" 
+                          style={{ 
+                            height: `${h * 5}px`,
+                            animationDelay: `${i * 0.05}s`
+                          }} 
+                        />
+                      ))}
+                    </div>
+
+                    {/* Live Interim Transcript Box */}
+                    <div className="w-full text-left mb-4">
+                      <span className="block text-[9px] font-extrabold text-[#3a5a40] uppercase tracking-wider mb-1">
+                        🎙️ Live Interim Transcript
+                      </span>
+                      <div className="p-3 bg-white border border-[#e2e2d5] rounded-xl text-xs text-[#2d332d] font-medium leading-relaxed shadow-inner max-h-24 overflow-y-auto">
+                        {tempTranscript || "Listening..."}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="stop-voice-recording-btn"
+                      onClick={stopVoiceRecording}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-md hover:bg-rose-700 transition cursor-pointer"
+                    >
+                      <Square className="w-3.5 h-3.5 text-white fill-white" />
+                      Stop & Transcribe
+                    </button>
+                  </div>
+                )}
+
+                {isSpeechSupported && showConfirmTranscript && !isRecording && (
+                  <div className="w-full py-2">
+                    <span className="block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider mb-2">
+                      🎙️ Audio Live Transcript
+                    </span>
+                    <div className="p-3 bg-white border border-[#e2e2d5] rounded-xl text-xs text-[#2d332d] font-medium leading-relaxed shadow-inner max-h-32 overflow-y-auto mb-3">
+                      {tempTranscript || "(No words captured)"}
+                    </div>
+                    
+                    <span className="block text-center text-[11px] font-bold text-[#1a2e1d] mb-3">
+                      Is this correct?
+                    </span>
+                    
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        id="confirm-transcript-yes-btn"
+                        onClick={confirmTranscript}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-[#3a5a40] text-white font-bold text-xs uppercase rounded-lg shadow-sm hover:bg-[#2f4934] transition cursor-pointer"
+                      >
+                        ✅ Yes, use this
+                      </button>
+                      <button
+                        type="button"
+                        id="confirm-transcript-no-btn"
+                        onClick={cancelConfirmTranscript}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-white text-rose-600 border border-[#e2e2d5] font-bold text-xs uppercase rounded-lg hover:bg-rose-50 transition cursor-pointer"
+                      >
+                        ❌ Re-record
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {recordingError && (
+                  <div className="w-full mt-3 p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-[11px] font-medium flex items-start gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{recordingError}</span>
+                  </div>
+                )}
+              </div>
+
               {/* Text note description */}
               <div>
                 <label htmlFor="issue-note" className="block text-xs font-bold uppercase tracking-wider text-[#8a8a7a] mb-2">
@@ -593,7 +1167,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
               <button
                 type="submit"
                 id="submit-report-btn"
-                disabled={!photoUrl}
+                disabled={!photoUrl && !note.trim()}
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-[#3a5a40] hover:bg-[#2f4934] disabled:bg-[#fafaf5]/80 text-white disabled:text-[#8a8a7a] font-bold uppercase tracking-wider rounded-xl text-xs shadow-md transition duration-150 cursor-pointer disabled:cursor-not-allowed"
               >
                 Launch Municipal Reporting Agent

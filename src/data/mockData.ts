@@ -1,10 +1,78 @@
 import { CivicReport } from '../types';
 
+export function getSvgDataUriForCategory(category: string): string {
+  const cat = category.toLowerCase();
+  
+  if (cat.includes('pothole') || cat.includes('road')) {
+    const potholeSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150"><rect width="200" height="150" fill="#78350f"/><text x="100" y="65" font-family="Arial" font-size="42" text-anchor="middle" fill="white">🕳️</text><text x="100" y="110" font-family="Arial" font-size="13" text-anchor="middle" fill="#fef3c7">Potholes &amp; Roads</text></svg>`;
+    const base64 = typeof btoa !== 'undefined' 
+      ? btoa(unescape(encodeURIComponent(potholeSvg))) 
+      : Buffer.from(potholeSvg, 'utf-8').toString('base64');
+    return `data:image/svg+xml;base64,${base64}`;
+  }
+  
+  if (cat.includes('drainage') || cat.includes('flooding') || cat.includes('overflow') || cat.includes('waterlogging')) {
+    const overflowSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150"><rect width="200" height="150" fill="#1e40af"/><text x="100" y="65" font-family="Arial" font-size="42" text-anchor="middle" fill="white">🌊</text><text x="100" y="110" font-family="Arial" font-size="13" text-anchor="middle" fill="#dbeafe">Drainage &amp; Flooding</text></svg>`;
+    const base64 = typeof btoa !== 'undefined' 
+      ? btoa(unescape(encodeURIComponent(overflowSvg))) 
+      : Buffer.from(overflowSvg, 'utf-8').toString('base64');
+    return `data:image/svg+xml;base64,${base64}`;
+  }
+  
+  let bgColor = '#6B7280'; // Others
+  let iconPaths = '';
+  let label = category;
+  
+  if (cat.includes('streetlight') || cat.includes('lighting')) {
+    bgColor = '#EAB308'; // yellow
+    iconPaths = `<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .6 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" /><path d="M9 18h6" /><path d="M10 22h4" />`;
+    label = "Street Lighting";
+  } else if (cat.includes('garbage') || cat.includes('sanitation')) {
+    bgColor = '#22C55E'; // green
+    iconPaths = `<path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" />`;
+    label = "Garbage & Sanitation";
+  } else if (cat.includes('water supply') || cat.includes('sewage') || cat.includes('water tap')) {
+    bgColor = '#06B6D4'; // cyan
+    iconPaths = `<path d="M2 12h6" /><path d="M8 10h8c1 0 2 1 2 2v3" /><path d="M12 10V6M9 6h6" /><path d="M18 19a1.5 1.5 0 1 1-3 0c0-1 1.5-2.5 1.5-2.5s1.5 1.5 1.5 2.5z" />`;
+    label = "Water Supply";
+  } else if (cat.includes('park') || cat.includes('footpath') || cat.includes('tree')) {
+    bgColor = '#10B981'; // teal
+    iconPaths = `<path d="M8 19a5 5 0 0 1-2.23-9.5A6 6 0 0 1 16 7a5 5 0 0 1 1.77 9.5A5 5 0 0 1 16 19Z" /><path d="M12 19v3" />`;
+    label = "Parks & Footpaths";
+  } else {
+    bgColor = '#6B7280'; // gray
+    iconPaths = `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" />`;
+    label = category;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">
+    <rect width="100%" height="100%" fill="${bgColor}" />
+    <rect x="15" y="15" width="370" height="270" rx="12" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2" />
+    <g transform="translate(152, 70) scale(4)" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      ${iconPaths}
+    </g>
+    <text x="200" y="235" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="bold" fill="white" text-anchor="middle" letter-spacing="0.5">
+      ${label}
+    </text>
+    <text x="200" y="260" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="rgba(255,255,255,0.7)" text-anchor="middle" font-weight="500" letter-spacing="1">
+      NAGARMITRA CIVIC PLATFORM
+    </text>
+  </svg>`.replace(/\s+/g, ' ');
+
+  let base64 = '';
+  if (typeof btoa !== 'undefined') {
+    base64 = btoa(unescape(encodeURIComponent(svg)));
+  } else if (typeof Buffer !== 'undefined') {
+    base64 = Buffer.from(svg, 'utf-8').toString('base64');
+  }
+  return `data:image/svg+xml;base64,${base64}`;
+}
+
 export const INITIAL_REPORTS: CivicReport[] = [
   {
     id: "rep_001",
     referenceId: "GMC-REF-100001",
-    photoUrl: "https://images.unsplash.com/photo-1515162305285-0293e4767cc2?auto=format&fit=crop&w=600&q=80",
+    photoUrl: getSvgDataUriForCategory("Potholes & Roads"),
     geo: {
       lat: 23.2172,
       lng: 72.6385,
@@ -33,36 +101,36 @@ export const INITIAL_REPORTS: CivicReport[] = [
   {
     id: "rep_002",
     referenceId: "GMC-REF-100002",
-    photoUrl: "https://images.unsplash.com/photo-1611284446314-60a58ac0deb9?auto=format&fit=crop&w=600&q=80",
+    photoUrl: getSvgDataUriForCategory("Drainage & Flooding"),
     geo: {
       lat: 23.2215,
       lng: 72.6482,
       ward: "ward_03",
       wardName: "Ward 3 (Sectors 15-21)"
     },
-    category: "Garbage & Sanitation",
+    category: "Drainage & Flooding",
     severity: 3,
     aiAnalysis: {
-      description: "Overflowing commercial dumpster with garbage spilling onto the pedestrian footpath, attracting stray cattle and birds.",
-      hazards: ["Health hazard from decay", "Footpath blockage", "Stray cattle accident risk"],
-      confidence: 0.89
+      description: "Severe waterlogging and drainage overflow in Sector 17 commercial market.",
+      hazards: ["Vehicle stalling risk", "Pedestrian slip and fall risk", "Contaminated water exposure"],
+      confidence: 0.92
     },
-    department: "Solid Waste Management",
-    officer: "Chief Sanitation Inspector",
-    complaintEn: "To,\nThe Health Officer / Waste Management Division,\nGandhinagar Municipal Corporation.\n\nSubject: Malodor and overflow of garbage dumpster in Sector 17 Market.\n\nRespected Officer,\nAn overflowing public dumpster has been left uncollected in Sector 17 commercial market for over 48 hours. The rotting waste has spilled over the pedestrian footpath, inducing an intolerable stench and breeding stray dogs and cattle. Requesting immediate clearing and regular schedules.\n\nBest Regards,\nNagarMitra User",
-    complaintHi: "सेवा में,\nस्वास्थ्य अधिकारी / ठोस कचरा प्रबंधन प्रभाग,\nगांधीनगर नगर निगम।\n\nविषय: सेक्टर 17 बाजार में कचरा डंपर के ओवरफ्लो होने और दुर्गंध के संबंध में।\n\nआदरणीय अधिकारी महोदय,\nसेक्टर 17 के व्यावसायिक बाजार में एक सार्वजनिक कचरा डंपर पिछले 48 घंटों से खाली नहीं किया गया है। सड़ा हुआ कचरा पैदल चलने वाले फुटपाथ पर फैल गया है, जिससे असहनीय दुर्गंध आ रही है और गाय-कुत्तों का जमावड़ा लगा हुआ है। तत्काल सफाई सुनिश्चित की जाए।\n\nसादर,\nनगरमित्र उपयोगकर्ता",
+    department: "GMC Water Works Division",
+    officer: "Executive Engineer, Drainage & Water Works",
+    complaintEn: "To,\nThe Health Officer / Waste Management Division,\nGandhinagar Municipal Corporation.\n\nSubject: Urgent attention required for drainage overflow in Sector 17 Market.\n\nRespected Officer,\nThis is to report severe drainage overflow and waterlogging in the Sector 17 Market area. The stagnant water has accumulated on the main road and walkways, creating extremely unhygienic conditions and disrupting commercial activities. Immediate action to clear the blockage is highly requested.\n\nSincerely,\nConcerned Citizen of Gandhinagar",
+    complaintHi: "सेवा में,\nस्वास्थ्य अधिकारी / ठोस कचरा प्रबंधन प्रभाग,\nगांधीनगर नगर निगम।\n\nविषय: सेक्टर 17 बाजार में सीवरेज और जलभराव की समस्या के संबंध में।\n\nआदरणीय अधिकारी महोदय,\nइस पत्र के माध्यम से सेक्टर 17 बाजार क्षेत्र में सीवरेज के अतिप्रवाह और जलभराव की गंभीर समस्या की ओर आपका ध्यान आकर्षित करना है। बाजार के मुख्य मार्ग पर गंदा पानी जमा हो गया है, जिससे भारी परेशानी हो रही है। कृपया तत्काल सफाई कराएं।\n\nभवदीय,\nजागरूक नागरिक",
     status: "acknowledged",
     createdAt: Date.now() - 5 * 24 * 60 * 60 * 1000, // 5 days ago
     lastEscalatedAt: null,
     coWitnesses: [],
     embedding: [0.12, 0.3, -0.15],
     duplicateOf: null,
-    note: "Sanitation trucks haven't visited this sector since Monday."
+    note: "Drainage lines are completely blocked."
   },
   {
     id: "rep_003",
     referenceId: "GMC-REF-100003",
-    photoUrl: "https://images.unsplash.com/photo-1509395062183-67c5ad6faff9?auto=format&fit=crop&w=600&q=80",
+    photoUrl: getSvgDataUriForCategory("Streetlights"),
     geo: {
       lat: 23.1895,
       lng: 72.6288,
@@ -79,7 +147,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
     department: "GMC Electrical Maintenance Department",
     officer: "Smt. Priya Sharma (Health Officer / Coordinator)",
     complaintEn: "To,\nThe Chief Electrical Engineer,\nGandhinagar Municipal Corporation.\n\nSubject: Streetlight grid failure along Kudasan-Sargasan Link Road.\n\nDear Sir,\nThis is to report that the civic streetlights along the primary residential avenue in Kudasan have been non-functional for three consecutive nights. The entire street is engulfed in total darkness, presenting significant safety concerns for female commuters and senior citizens after dark. Please dispatch maintenance crews on high priority.\n\nThanking you,\nResident Association Member",
-    complaintHi: "सेवा में,\nमुख्य विद्युत अभियंता,\nगांधीनगर नगर निगम।\n\nविषय: कुदासन-सरगासन लिंक रोड पर स्ट्रीटलाइट ग्रिड खराब होने के संबंध में।\n\nप्रिय महोदय,\nसूचित करना है कि कुदासन में मुख्य आवासीय एवेन्यू की स्ट्रीटलाइट्स लगातार तीन रातों से चालू नहीं हुई हैं। पूरा मार्ग गहरे अंधकार में डूबा हुआ है, जिससे महिलाओं और बुजुर्गों की सुरक्षा को लेकर गंभीर चिंताएं पैदा हो गई हैं। कृपया प्राथमिकता के आधार पर इसे ठीक कराएं।\n\nधन्यवाद,\nस्थानीय निवासी",
+    complaintHi: "सेवा में,\nमुख्य विद्युत अभियंता,\nगांधीनगर नगर निगम।\n\nविषय: कुदासन-सरगासन लिंक रोड पर स्ट्रीटलाइट ग्रिड खराब होने के संबंध में।\n\nप्रिय महोदय,\nसूची करना है कि कुदासन में मुख्य आवासीय एवेन्यू की स्ट्रीटलाइट्स लगातार तीन रातों से चालू नहीं हुई हैं। पूरा मार्ग गहरे अंधकार में डूबा हुआ है, जिससे महिलाओं और बुजुर्गों की सुरक्षा को लेकर गंभीर चिंताएं पैदा हो गई हैं। कृपया प्राथमिकता के आधार पर इसे ठीक कराएं।\n\nधन्यवाद,\nस्थानीय निवासी",
     status: "escalated",
     createdAt: Date.now() - 8 * 24 * 60 * 60 * 1000, // 8 days ago
     lastEscalatedAt: Date.now() - 1 * 24 * 60 * 60 * 1000,
@@ -91,7 +159,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
   {
     id: "rep_004",
     referenceId: "GMC-REF-100004",
-    photoUrl: "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=600&q=80",
+    photoUrl: getSvgDataUriForCategory("Water Supply & Sewage"),
     geo: {
       lat: 23.2354,
       lng: 72.6598,
