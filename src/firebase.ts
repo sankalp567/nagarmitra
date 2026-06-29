@@ -30,14 +30,14 @@ if (hasValidConfig) {
     const dbId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID as string) || configJson.firestoreDatabaseId || '';
     if (dbId) {
       db = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true
+        experimentalForceLongPolling: true
       }, dbId);
-      console.log(`[Firebase] Initialized with named Firestore Database ID: "${dbId}" (auto-detect long-polling enabled)`);
+      console.log(`[Firebase] Initialized with named Firestore Database ID: "${dbId}" (force long-polling enabled)`);
     } else {
       db = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true
+        experimentalForceLongPolling: true
       });
-      console.log(`[Firebase] Initialized with default Firestore Database (auto-detect long-polling enabled)`);
+      console.log(`[Firebase] Initialized with default Firestore Database (force long-polling enabled)`);
     }
     storage = getStorage(app);
   } catch (error) {

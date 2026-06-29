@@ -108,7 +108,7 @@ export default function NagarMitraChat() {
       }
     } catch (err: any) {
       console.error("Chat error:", err);
-      setError("Unable to reach NagarMitra. Please check your connection and try again.");
+      setError("NagarMitra chat is currently at capacity. To get help with a specific complaint, open any ticket and use the Ask NagarMitra Desk panel — it can answer questions about your ticket's status, escalation, and assigned officer.");
     } finally {
       setIsTyping(false);
     }
@@ -143,7 +143,7 @@ export default function NagarMitraChat() {
           </div>
           <div>
             <h2 className="text-sm font-extrabold text-[#1a2e1d] flex items-center gap-1.5 uppercase tracking-wide">
-              💬 NagarMitra Civic Assistant
+              NagarMitra Civic Assistant
             </h2>
             <p className="text-[10px] font-medium text-[#8a8a7a]">
               Municipal helpdesk, RTI Act 2005 guidance, SWAGAT 2.0 & CPGRAMS escalations
@@ -236,7 +236,7 @@ export default function NagarMitraChat() {
               className="pt-4 border-t border-dashed border-[#e2e2d5] max-w-xl mx-auto"
             >
               <span className="block text-center text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-widest mb-3">
-                💡 Common Municipal Queries
+                Common Municipal Queries
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {PRESET_PROMPTS.map((p, idx) => (
@@ -307,6 +307,25 @@ export default function NagarMitraChat() {
             >
               <Send className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* Static suggested questions below the input box (always visible) */}
+          <div className="flex flex-wrap gap-1.5 px-1.5 py-1">
+            <span className="text-[9px] font-bold text-[#8a8a7a] self-center uppercase tracking-wider mr-1">Suggestions:</span>
+            {[
+              "How do I file a civic complaint?",
+              "What are my RTI rights under the RTI Act 2005?",
+              "How does the escalation process work?"
+            ].map((q, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => setInputValue(q)}
+                className="text-[10px] font-semibold text-[#3a5a40] bg-white hover:bg-[#3a5a40]/5 border border-[#e2e2d5] hover:border-[#3a5a40]/35 rounded-lg px-2.5 py-1 transition cursor-pointer text-left"
+              >
+                {q}
+              </button>
+            ))}
           </div>
 
           {/* Attribution footer (REQUIRED BY SPECIFICATION) */}

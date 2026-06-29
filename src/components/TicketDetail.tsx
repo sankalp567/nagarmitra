@@ -4,10 +4,10 @@ import {
   ArrowLeft, Calendar, User, ShieldAlert, FileText, CheckCircle2, 
   MapPin, Copy, Download, Share2, Mail, ExternalLink, Sparkles,
   Award, ArrowUpRight, Check, AlertCircle, Building, ShieldCheck,
-  HelpCircle, ChevronDown, ChevronUp, MessageSquare, Send, Loader2
+  HelpCircle, ChevronDown, ChevronUp, MessageSquare, Send, Loader2, Link
 } from 'lucide-react';
 import { CivicReport, IssueStatus } from '../types';
-import { updateReportStatus, addCoWitness, updateReportReasoning } from '../utils/reportStore';
+import { updateReportStatus, addCoWitness, updateReportReasoning, citizenEscalateReport, confirmReportResolution, getOfficerForDeptAndTier } from '../utils/reportStore';
 import { getProxiedImageUrl } from '../utils/imageUtils';
 
 interface TicketDetailProps {
@@ -20,6 +20,7 @@ interface TicketDetailProps {
     reportId: string,
     reasoning: { classificationReasoning: string; alternativeCategories: string; severityFactors: string }
   ) => void;
+  onUpdateReport?: (updatedReport: CivicReport) => void;
 }
 
 const isValidUrl = (urlStr: string): boolean => {
@@ -87,7 +88,8 @@ export default function TicketDetail({
   previousView, 
   onUpdateStatus, 
   onUpdateWitness,
-  onUpdateReasoning 
+  onUpdateReasoning,
+  onUpdateReport
 }: TicketDetailProps) {
   const [activeLang, setActiveLang] = useState<'EN' | 'HI' | 'GU'>('EN');
   const [copied, setCopied] = useState<boolean>(false);
@@ -95,7 +97,69 @@ export default function TicketDetail({
   const [witnessSuccess, setWitnessSuccess] = useState<string>('');
   const [activeDocTabDetail, setActiveDocTabDetail] = useState<string>('primary');
   const [copiedDetail, setCopiedDetail] = useState<boolean>(false);
+  const [showDocToast, setShowDocToast] = useState<boolean>(false);
   const [isWhyClassificationOpen, setIsWhyClassificationOpen] = useState<boolean>(false);
+  const [linkCopied, setLinkCopied] = useState<boolean>(false);
+  const [showLinkToast, setShowLinkToast] = useState<boolean>(false);
+
+  // Citizen evaluation and dispute states
+  const [confirmSuccessMsg, setConfirmSuccessMsg] = useState<string>('');
+  const [disputeEscalatedMsg, setDisputeEscalatedMsg] = useState<string>('');
+  const [showDisputeConfirmDialog, setShowDisputeConfirmDialog] = useState<boolean>(false);
+
+  const handleConfirmResolution = async () => {
+    const timelineEntry = {
+      action: "Citizen Confirmed Resolution",
+      timestamp: Date.now(),
+      by: "Citizen",
+      details: "Citizen verified and confirmed the on-site resolution."
+    };
+    const success = await confirmReportResolution(report.id, timelineEntry);
+    if (success) {
+      setConfirmSuccessMsg("Thank you for confirming");
+      const updatedReport = {
+        ...report,
+        status: 'confirmed-resolved' as IssueStatus,
+        actionTimeline: [...(report.actionTimeline || []), timelineEntry]
+      };
+      if (onUpdateReport) {
+        onUpdateReport(updatedReport);
+      } else {
+        onUpdateStatus(report.id, 'confirmed-resolved' as IssueStatus);
+      }
+    }
+  };
+
+  const handleConfirmDisputeEscalation = async () => {
+    setShowDisputeConfirmDialog(false);
+    const currentTier = report.escalationTier ?? 0;
+    const nextTier = Math.min(currentTier + 1, 4);
+    const nextOfficer = getOfficerForDeptAndTier(report.department, nextTier);
+    
+    const timelineEntry = {
+      action: "Resolution Disputed",
+      timestamp: Date.now(),
+      by: "Citizen",
+      details: `Citizen reported the issue was not resolved. Escalating complaint to Tier ${nextTier} authority (${nextOfficer}).`
+    };
+
+    const success = await citizenEscalateReport(report.id, nextTier, nextOfficer, timelineEntry);
+    if (success) {
+      setDisputeEscalatedMsg(`Your dispute has been escalated to ${nextOfficer}`);
+      const updatedReport = {
+        ...report,
+        status: 'Disputed' as IssueStatus,
+        escalationTier: nextTier,
+        officer: nextOfficer,
+        actionTimeline: [...(report.actionTimeline || []), timelineEntry]
+      };
+      if (onUpdateReport) {
+        onUpdateReport(updatedReport);
+      } else {
+        onUpdateStatus(report.id, 'Disputed' as IssueStatus);
+      }
+    }
+  };
 
   // Poll for reasoning fields if they are missing
   React.useEffect(() => {
@@ -361,6 +425,44 @@ export default function TicketDetail({
     }
   };
 
+  const simulatedOffsetDays = Number(localStorage.getItem('simulatedOffsetDays') || '0');
+  const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
+
+  const steps = [
+    {
+      day: 0,
+      timestamp: report.createdAt,
+      label: `Day 0 (Today)`,
+      text: `Complaint filed → Assigned to ${report.department || 'Ward Department'} · ${report.officer || 'Nodal Officer'}`
+    },
+    {
+      day: 7,
+      timestamp: report.createdAt + 7 * 24 * 60 * 60 * 1000,
+      label: `Day 7 (${new Date(report.createdAt + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })})`,
+      text: "If unresolved → Escalation notice to Executive Engineer"
+    },
+    {
+      day: 14,
+      timestamp: report.createdAt + 14 * 24 * 60 * 60 * 1000,
+      label: `Day 14 (${new Date(report.createdAt + 14 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })})`,
+      text: "If still open → Escalation to Deputy Municipal Commissioner"
+    },
+    {
+      day: 21,
+      timestamp: report.createdAt + 21 * 24 * 60 * 60 * 1000,
+      label: `Day 21 (${new Date(report.createdAt + 21 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })})`,
+      text: "Auto-drafts RTI Application + SWAGAT 2.0 petition + CPGRAMS grievance"
+    },
+    {
+      day: 28,
+      timestamp: report.createdAt + 28 * 24 * 60 * 60 * 1000,
+      label: `Day 28 (${new Date(report.createdAt + 28 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })})`,
+      text: "Final notice to Municipal Commissioner"
+    }
+  ];
+
+  const nextStepIdx = steps.findIndex(s => s.timestamp > virtualNow);
+
   const formattedDate = new Date(report.createdAt).toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
@@ -396,6 +498,36 @@ export default function TicketDetail({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Header sharing handlers
+  const handleHeaderWhatsAppShare = () => {
+    const ticketId = report.id;
+    const issueType = report.category;
+    const address = report.geo.wardName;
+    const severity = report.severity;
+    const status = report.status;
+    const shareUrl = `${window.location.origin}/#/ticket/${ticketId}`;
+    
+    const message = `I filed a civic complaint via NagarMitra (Ticket: ${ticketId}). Issue: ${issueType} at ${address}. Severity: ${severity}/5. Current status: ${status}. Track it at: ${shareUrl}`;
+    const encodedMessage = encodeURIComponent(message);
+    window.open(`https://wa.me/?text=${encodedMessage}`, '_blank');
+  };
+
+  const handleCopyLink = () => {
+    const url = `${window.location.origin}/#/ticket/${report.id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setLinkCopied(true);
+      setShowLinkToast(true);
+      setTimeout(() => {
+        setLinkCopied(false);
+      }, 2000);
+      setTimeout(() => {
+        setShowLinkToast(false);
+      }, 3000);
+    }).catch(err => {
+      console.error("Failed to copy link: ", err);
+    });
   };
 
   // WhatsApp sharing logic
@@ -449,18 +581,69 @@ export default function TicketDetail({
     { key: 'resolved', title: 'Remediated', desc: 'Resolved on site. Citizen evaluation completed.' }
   ];
 
-  const currentStageIndex = timelineStages.findIndex(s => s.key === report.status);
+  let currentStatusForTimeline = report.status;
+  if (report.status === 'confirmed-resolved') {
+    currentStatusForTimeline = 'resolved';
+  } else if (report.status === 'disputed' || report.status === 'Disputed') {
+    currentStatusForTimeline = 'escalated';
+  }
+  const currentStageIndex = timelineStages.findIndex(s => s.key === currentStatusForTimeline);
+  const isResolvedOrClosed = report.status?.toLowerCase() === 'resolved' || report.status?.toLowerCase() === 'closed';
 
   return (
     <div id="ticket-detail-screen" className="max-w-5xl mx-auto px-4 py-8 animate-fadeIn">
-      {/* Back button link */}
-      <button
-        onClick={onBack}
-        className="inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-[#fafaf5] text-[#3a5a40] hover:text-[#1a2e1d] font-bold text-sm border border-[#e2e2d5] rounded-xl mb-6 shadow-xs transition duration-150 ease-in-out group cursor-pointer"
-      >
-        <ArrowLeft className="w-4 h-4 transform group-hover:-translate-x-0.5 transition-transform text-[#3a5a40]" />
-        {getBackLabel()}
-      </button>
+      {showDocToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 border border-emerald-500 text-white font-sans text-xs font-bold px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 animate-fadeIn">
+          <CheckCircle2 className="w-4 h-4 text-white animate-bounce" />
+          <span>Copied to clipboard</span>
+        </div>
+      )}
+      {showLinkToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-[#e65100] border border-[#ffb74d] text-white font-sans text-xs font-bold px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 animate-fadeIn">
+          <CheckCircle2 className="w-4 h-4 text-white animate-bounce" />
+          <span>Link copied!</span>
+        </div>
+      )}
+      
+      {/* Header Area with Back button and Share buttons */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        {/* Back button link */}
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-[#fafaf5] text-[#3a5a40] hover:text-[#1a2e1d] font-bold text-sm border border-[#e2e2d5] rounded-xl shadow-xs transition duration-150 ease-in-out group cursor-pointer self-start"
+        >
+          <ArrowLeft className="w-4 h-4 transform group-hover:-translate-x-0.5 transition-transform text-[#3a5a40]" />
+          {getBackLabel()}
+        </button>
+
+        {/* Header Share buttons */}
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
+          <button
+            onClick={handleHeaderWhatsAppShare}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-600/60 bg-white hover:bg-emerald-50/50 text-emerald-700 font-bold text-xs transition duration-150 cursor-pointer shadow-3xs"
+          >
+            <Share2 className="w-3.5 h-3.5 text-emerald-600" />
+            Share on WhatsApp
+          </button>
+
+          <button
+            onClick={handleCopyLink}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#e2e2d5] bg-white hover:bg-[#fafaf5] text-[#5a5a40] hover:text-[#1a2e1d] font-bold text-xs transition duration-150 cursor-pointer shadow-3xs"
+          >
+            {linkCopied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                Link copied!
+              </>
+            ) : (
+              <>
+                <Link className="w-3.5 h-3.5 text-[#5a5a40]" />
+                Copy Link
+              </>
+            )}
+          </button>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Left Primary Dossier Column */}
@@ -519,20 +702,103 @@ export default function TicketDetail({
                 </div>
               </div>
 
-              {/* AI analysis card */}
-              {report.visionError && (
-                <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-3xl p-5 mb-6 animate-fadeIn font-sans">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-extrabold text-xs text-rose-900 uppercase tracking-wider block">Local Compliance Fallback Active</span>
-                      <p className="text-xs text-rose-700 leading-relaxed font-semibold font-mono mt-1">{report.visionError}</p>
-                    </div>
+
+
+              {/* Citizen Evaluation / Dispute Action Panel */}
+              {isResolvedOrClosed && (
+                <div className="bg-emerald-50/40 border border-emerald-600/20 rounded-2xl p-5 mb-6 animate-fadeIn">
+                  <div className="flex items-center gap-2 mb-3">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 animate-pulse" />
+                    <h3 className="font-extrabold text-xs text-emerald-900 uppercase tracking-wider font-sans">Citizen Resolution Evaluation</h3>
                   </div>
+                  <p className="text-xs text-emerald-800 leading-relaxed font-sans mb-4">
+                    The municipal officer has marked this ticket as Resolved/Closed. Please evaluate if the work was completed to your satisfaction on site.
+                  </p>
+
+                  {confirmSuccessMsg || disputeEscalatedMsg ? (
+                    <div className="p-3.5 bg-white border border-emerald-500/20 rounded-xl shadow-3xs">
+                      {confirmSuccessMsg && (
+                        <div className="text-xs font-bold text-emerald-800 flex items-center gap-1.5 font-sans">
+                          <Check className="w-4 h-4 text-emerald-600 animate-bounce" />
+                          {confirmSuccessMsg}
+                        </div>
+                      )}
+                      {disputeEscalatedMsg && (
+                        <div className="text-xs font-bold text-rose-700 flex items-center gap-1.5 font-sans">
+                          <AlertCircle className="w-4 h-4 text-rose-600 animate-pulse" />
+                          {disputeEscalatedMsg}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        onClick={handleConfirmResolution}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition duration-150 cursor-pointer"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        ✓ Confirm Resolution
+                      </button>
+
+                      <button
+                        onClick={() => setShowDisputeConfirmDialog(true)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition duration-150 cursor-pointer"
+                      >
+                        <span className="font-bold">✗</span> Issue Not Fixed
+                      </button>
+                    </div>
+                  )}
+
+                  {showDisputeConfirmDialog && (
+                    <div className="mt-4 p-4 bg-white border border-rose-200 rounded-xl shadow-3xs animate-fadeIn">
+                      <p className="text-xs font-bold text-rose-900 mb-3 font-sans">
+                        This will escalate your complaint to the next authority. Confirm?
+                      </p>
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => setShowDisputeConfirmDialog(false)}
+                          className="px-3 py-1.5 border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-50 transition cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleConfirmDisputeEscalation}
+                          className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition cursor-pointer"
+                        >
+                          Confirm
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
-              <div className="bg-[#fafaf5] rounded-3xl p-5 border border-[#e2e2d5] mb-6 animate-fadeIn">
+              {!isResolvedOrClosed && (report.status === 'confirmed-resolved' || report.status === 'Disputed' || report.status === 'disputed') && (
+                <div className={`rounded-2xl p-5 mb-6 border animate-fadeIn ${report.status === 'confirmed-resolved' ? 'bg-[#f0f9f0] border-[#d5edd5] text-[#3a5a40]' : 'bg-[#fff5f5] border-[#ffd5d5] text-[#c25953]'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    {report.status === 'confirmed-resolved' ? (
+                      <CheckCircle2 className="w-4 h-4 text-[#3a5a40]" />
+                    ) : (
+                      <ShieldAlert className="w-4 h-4 text-[#c25953]" />
+                    )}
+                    <h3 className="font-extrabold text-xs uppercase tracking-wider font-sans">
+                      {report.status === 'confirmed-resolved' ? "Resolution Confirmed" : "Resolution Disputed"}
+                    </h3>
+                  </div>
+                  <p className="text-xs font-bold leading-relaxed font-sans">
+                    {report.status === 'confirmed-resolved' ? (
+                      "Thank you for confirming"
+                    ) : (
+                      `Your dispute has been escalated to ${report.officer || "the designated authority"}`
+                    )}
+                  </p>
+                </div>
+              )}
+
+              <div className="bg-[#fafaf5] rounded-3xl p-5 border border-[#e2e2d5] mb-6 animate-fadeIn relative">
+                <div className="absolute top-4 right-4 bg-[#4285F4] text-white text-[11px] font-bold px-2.5 py-1 rounded-full shadow-3xs z-10 font-sans">
+                  Gemini Vision
+                </div>
                 <div className="flex items-center gap-2 mb-3">
                   <Sparkles className="w-4 h-4 text-[#3a5a40] animate-pulse" />
                   <h3 className="font-extrabold text-xs text-[#1a2e1d] uppercase tracking-wider">AI Guard Evaluation</h3>
@@ -633,11 +899,16 @@ export default function TicketDetail({
           {/* Trilingual complaint drafting card (Deep forest green compliance editor) */}
           <div id="complaint-draft-card" className="bg-[#1a2e1d] text-white rounded-3xl border border-[#3a5a40]/35 overflow-hidden shadow-md">
             {/* Tabs for Languages */}
-            <div className="bg-[#132215] px-5 py-3 border-b border-[#2d4632] flex items-center justify-between">
-              <span className="font-bold text-[10px] text-[#fafaf5] flex items-center gap-1.5 uppercase font-mono tracking-wider">
-                <FileText className="w-4 h-4 text-[#5ag7a5a] text-[#5a7a5a]" />
-                Administrative Draft
-              </span>
+            <div className="bg-[#132215] px-5 py-3 border-b border-[#2d4632] flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2.5">
+                <span className="font-bold text-[10px] text-[#fafaf5] flex items-center gap-1.5 uppercase font-mono tracking-wider">
+                  <FileText className="w-4 h-4 text-[#5a7a5a]" />
+                  Administrative Draft
+                </span>
+                <span className="bg-[#4285F4] text-white text-[11px] font-bold px-2.5 py-0.5 rounded-full shadow-3xs font-sans">
+                  Gemini + Google Search
+                </span>
+              </div>
               
               <div className="flex gap-1.5 p-0.5 bg-[#1a2e1d] rounded-xl border border-[#2d4632]">
                 <button
@@ -761,11 +1032,16 @@ export default function TicketDetail({
           {/* SLA Escalation Notice Draft Card */}
           {report.escalationNotice && (
             <div className="bg-[#1a2e1d] border border-[#3a5a40] rounded-3xl p-6 shadow-md text-white animate-fadeIn">
-              <div className="border-b border-[#2d4632] pb-3.5 mb-3 flex items-center justify-between">
-                <h3 className="font-extrabold text-xs uppercase tracking-wider flex items-center gap-1.5 text-white">
-                  <ShieldAlert className="w-4.5 h-4.5 text-rose-500 animate-pulse" />
-                  SLA Escalation Notice
-                </h3>
+              <div className="border-b border-[#2d4632] pb-3.5 mb-3 flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-extrabold text-xs uppercase tracking-wider flex items-center gap-1.5 text-white">
+                    <ShieldAlert className="w-4.5 h-4.5 text-rose-500 animate-pulse" />
+                    SLA Escalation Notice
+                  </h3>
+                  <span className="bg-[#4285F4] text-white text-[11px] font-bold px-2.5 py-0.5 rounded-full shadow-3xs font-sans">
+                    Gemini Search Grounding
+                  </span>
+                </div>
                 <span className={`text-[8px] font-extrabold uppercase font-mono px-2 py-0.5 rounded-md border ${report.escalationNoticeIsOffline ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                   {report.escalationNoticeIsOffline ? 'OFFLINE DRAFT' : 'AI DRAFTED'}
                 </span>
@@ -805,9 +1081,36 @@ export default function TicketDetail({
                 </div>
               )}
 
+              {['tier3RTI', 'tier3Swagat', 'tier3Cpgrams'].includes(activeDocTabDetail) && (
+                <div className="flex items-center justify-between mb-2 bg-[#132215] border border-[#2d4632] px-4 py-2.5 rounded-xl">
+                  <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider font-mono">
+                    {activeDocTabDetail === 'tier3RTI' ? 'RTI Application Document' : 
+                     activeDocTabDetail === 'tier3Swagat' ? 'SWAGAT Petition' : 
+                     'CPGRAMS Grievance Document'}
+                  </span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(getDocContent() || '');
+                      setShowDocToast(true);
+                      setTimeout(() => setShowDocToast(false), 2000);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-extrabold bg-[#3a5a40] hover:bg-[#2d4632] text-white rounded-lg transition uppercase tracking-wider cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy to Clipboard
+                  </button>
+                </div>
+              )}
+
               <div className="bg-[#132215] border border-[#2d4632] rounded-xl p-4 font-mono text-[10px] text-[#fafaf5]/90 max-h-60 overflow-y-auto whitespace-pre-wrap leading-relaxed select-text">
                 {getDocContent()}
               </div>
+
+              {['tier3RTI', 'tier3Swagat', 'tier3Cpgrams'].includes(activeDocTabDetail) && (
+                <div className="mt-2 text-[10px] text-emerald-400 font-semibold font-sans italic">
+                  Ready to submit — paste into [RTI online portal / SWAGAT 2.0 / CPGRAMS portal]
+                </div>
+              )}
 
               {/* Grounding Status Block for Escalation Docs */}
               <div className="mt-3">
@@ -868,6 +1171,69 @@ export default function TicketDetail({
             </div>
           )}
 
+          {/* "What Happens Next" Escalation Timeline Card */}
+          <div id="what-happens-next-card" className="bg-white border border-[#e2e2d5] rounded-3xl p-6 shadow-sm">
+            <div className="border-b border-[#e2e2d5] pb-3 mb-4 flex items-center justify-between">
+              <h3 className="font-extrabold text-xs text-[#1a2e1d] uppercase tracking-wider flex items-center gap-1.5">
+                <Building className="w-4 h-4 text-[#3a5a40]" />
+                What Happens Next
+              </h3>
+              <span className="bg-[#fffbf0] text-[#f57c00] text-[9px] font-extrabold uppercase font-mono px-2.5 py-1 rounded-full border border-[#ffe8b3]">
+                Escalation Timeline
+              </span>
+            </div>
+
+            <div className="space-y-6 relative before:absolute before:left-3 mt-4 before:top-2 before:bottom-2 before:w-0.5 before:bg-[#e2e2d5]">
+              {steps.map((step, idx) => {
+                const isCompleted = step.timestamp <= virtualNow;
+                const isCurrent = idx === nextStepIdx;
+                const isFuture = idx > nextStepIdx;
+
+                let dotClass = "";
+                let labelClass = "";
+                let textClass = "";
+                let itemBgClass = "pl-1";
+
+                if (isCompleted) {
+                  dotClass = "bg-gray-400 text-white";
+                  labelClass = "text-gray-400 font-bold font-mono text-[9px]";
+                  textClass = "text-gray-400 font-medium";
+                } else if (isCurrent) {
+                  dotClass = "bg-[#f57c00] ring-4 ring-[#ffe0b2] text-white scale-110 shadow-sm shadow-[#f57c00]/20 animate-pulse";
+                  labelClass = "text-[#e65100] font-extrabold font-mono text-[9px] uppercase tracking-wider";
+                  textClass = "text-[#1a2e1d] font-bold";
+                  itemBgClass = "pl-1 bg-[#fffbf0]/40 border border-[#ffe8b3]/30 p-3 rounded-2xl";
+                } else {
+                  dotClass = "bg-white border-2 border-[#e2e2d5] text-[#8a8a7a]";
+                  labelClass = "text-[#8a8a7a] font-semibold font-mono text-[9px]";
+                  textClass = "text-[#5a5a40] font-normal";
+                }
+
+                return (
+                  <div key={idx} className={`flex gap-4 items-start select-none relative ${itemBgClass}`}>
+                    {/* Connector Node */}
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center relative z-10 shrink-0 transition duration-300 ${dotClass}`}>
+                      {isCompleted ? (
+                        <Check className="w-3.5 h-3.5 text-white" />
+                      ) : (
+                        <span className={`w-1.5 h-1.5 rounded-full ${isCurrent ? 'bg-white' : 'bg-gray-300'}`} />
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <h4 className={labelClass}>
+                        {step.label}
+                      </h4>
+                      <p className={`text-[11px] leading-relaxed mt-0.5 ${textClass}`}>
+                        {step.text}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Status timeline card */}
           <div className="bg-white border border-[#e2e2d5] rounded-3xl p-6 shadow-sm">
             <div className="border-b border-[#e2e2d5] pb-3 mb-4 flex items-center justify-between">
@@ -875,9 +1241,85 @@ export default function TicketDetail({
                 <CheckCircle2 className="w-4 h-4 text-[#3a5a40]" />
                 Action Timeline
               </h3>
-              <span className={`text-[9px] font-extrabold uppercase font-mono px-2.5 py-1 rounded-full border ${report.status === 'resolved' ? 'bg-[#f0f9f0] text-[#3a5a40] border-[#d5edd5]' : report.status === 'escalated' ? 'bg-[#fff5f5] text-[#c25953] border-[#ffd5d5] animate-pulse' : 'bg-[#fffbf0] text-[#b37d14] border-[#ffe8b3]'}`}>
+              <span className={`text-[9px] font-extrabold uppercase font-mono px-2.5 py-1 rounded-full border ${
+                report.status === 'resolved' || report.status === 'confirmed-resolved' 
+                  ? 'bg-[#f0f9f0] text-[#3a5a40] border-[#d5edd5]' 
+                  : (report.status === 'escalated' || report.status === 'Disputed' || report.status === 'disputed') 
+                    ? 'bg-[#fff5f5] text-[#c25953] border-[#ffd5d5] animate-pulse' 
+                    : 'bg-[#fffbf0] text-[#b37d14] border-[#ffe8b3]'
+              }`}>
                 {report.status}
               </span>
+            </div>
+
+            {/* Escalation Ladder Visual Progress Bar */}
+            <div id="escalation-ladder-progress" className="mb-8 bg-[#fafaf5] border border-[#e2e2d5] rounded-2xl p-4 font-sans select-none">
+              <span className="text-[10px] font-extrabold text-[#8a8a7a] uppercase tracking-wider block mb-3.5">
+                Escalation Ladder Progress
+              </span>
+              
+              <div className="relative flex items-center justify-between mt-3 px-2">
+                {/* Connecting Line background */}
+                <div className="absolute left-6 right-6 top-[13px] h-0.5 bg-[#e2e2d5] -z-0" />
+                
+                {/* Connecting Line completed/filled */}
+                <div 
+                  className="absolute left-6 top-[13px] h-0.5 bg-gray-400 -z-0 transition-all duration-500" 
+                  style={{ 
+                    width: `${Math.min((report.escalationTier ?? 0) * 25, 100)}%` 
+                  }} 
+                />
+
+                {/* 5 Nodes: Day 0 -> Day 7 -> Day 14 -> Day 21 -> Day 28 */}
+                {[
+                  { tier: 0, label: "Day 0", subtitle: "Lodged", desc: "Ward Nodal Officer" },
+                  { tier: 1, label: "Day 7", subtitle: "EE", desc: "Exec. Engineer" },
+                  { tier: 2, label: "Day 14", subtitle: "DyMC", desc: "Deputy Comm." },
+                  { tier: 3, label: "Day 21", subtitle: "RTI/SWAGAT", desc: "Citizen Appeal" },
+                  { tier: 4, label: "Day 28", subtitle: "Commissioner", desc: "Municipal Comm." }
+                ].map((node) => {
+                  const currentTier = report.escalationTier ?? 0;
+                  const isCompleted = node.tier < currentTier;
+                  const isCurrent = node.tier === currentTier;
+                  const isFuture = node.tier > currentTier;
+
+                  // Styling based on state: completed (grey), current (orange), future (outlined)
+                  let dotStyle = "";
+                  let textStyle = "";
+                  if (isCompleted) {
+                    dotStyle = "bg-gray-400 border-2 border-gray-400 text-white";
+                    textStyle = "text-gray-500 font-medium";
+                  } else if (isCurrent) {
+                    dotStyle = "bg-[#f57c00] border-4 border-[#ffe0b2] text-white scale-110 shadow-sm shadow-[#f57c00]/20 animate-pulse";
+                    textStyle = "text-[#f57c00] font-black";
+                  } else {
+                    dotStyle = "bg-white border-2 border-[#e2e2d5] text-[#8a8a7a]";
+                    textStyle = "text-[#8a8a7a] font-normal";
+                  }
+
+                  return (
+                    <div key={node.tier} className="relative z-10 flex flex-col items-center flex-1">
+                      {/* Node Circle */}
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[9px] font-bold font-mono transition duration-300 ${dotStyle}`}>
+                        {isCompleted ? "✓" : node.tier}
+                      </div>
+                      
+                      {/* Node Labels */}
+                      <div className="text-center mt-2.5 max-w-[80px]">
+                        <p className={`text-[9px] uppercase tracking-wider ${textStyle}`}>
+                          {node.label}
+                        </p>
+                        <p className={`text-[10px] truncate leading-tight ${isCurrent ? 'text-[#e65100] font-extrabold' : 'text-[#1a2e1d] font-bold'}`}>
+                          {node.subtitle}
+                        </p>
+                        <p className="text-[8px] text-[#8a8a7a] font-medium leading-none mt-0.5 truncate hidden sm:block">
+                          {node.desc}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Vertical timeline stages list */}

@@ -44,11 +44,11 @@ setInterval(() => {
   geminiCallsThisMinute = 0;
 }, 60 * 1000);
 
-// Reset daily at 18:30 UTC
+// Reset daily at 00:00 UTC
 function scheduleDailyReset() {
   const now = new Date();
   const target = new Date(now);
-  target.setUTCHours(18, 30, 0, 0);
+  target.setUTCHours(0, 0, 0, 0);
   if (now.getTime() >= target.getTime()) {
     target.setUTCDate(target.getUTCDate() + 1);
   }
@@ -62,7 +62,7 @@ function scheduleDailyReset() {
 }
 scheduleDailyReset();
 
-const ai = new GoogleGenAI({
+export const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
     headers: {
@@ -232,7 +232,7 @@ export async function analyzeIssueImage(
   const secondsToMidnightIST = () => {
     const now = new Date();
     const target = new Date(now);
-    target.setUTCHours(18, 30, 0, 0);
+    target.setUTCHours(0, 0, 0, 0);
     if (now.getTime() >= target.getTime()) {
       target.setUTCDate(target.getUTCDate() + 1);
     }
@@ -333,7 +333,7 @@ Please analyze the described civic problem to produce a valid compliance ticket.
     };
 
     const modelsToTry = [
-      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-2.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
@@ -693,7 +693,7 @@ Please generate three diagnostic reasoning fields for this ticket:
       contents: reasoningPrompt,
       ...reasoningConfig
     },
-    ["gemini-2.0-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+    ["gemini-1.5-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"]
   );
 
   const reasoningText = reasoningResultObj.response?.text;
@@ -1162,7 +1162,7 @@ Guidelines:
     }
 
     const modelsToTry = [
-      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-2.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
@@ -1423,8 +1423,9 @@ export async function generateSystemicBulletin(params: {
   category: string;
   count: number;
   ticketDetails: string[];
+  customPrompt?: string;
 }): Promise<{ bulletin: string; isStub?: boolean }> {
-  const { wardName, category, count, ticketDetails } = params;
+  const { wardName, category, count, ticketDetails, customPrompt } = params;
   const apiKey = process.env.GEMINI_API_KEY;
   const isOfflineMode = !apiKey || apiKey === "DummyKey" || apiKey.includes("dummy");
 
@@ -1436,7 +1437,7 @@ export async function generateSystemicBulletin(params: {
   }
 
   try {
-    const promptText = `Generate a concise, highly professional "Systemic Risk Bulletin" (strictly 3-4 sentences) for a municipal civic issues cluster.
+    const promptText = customPrompt || `Generate a concise, highly professional "Systemic Risk Bulletin" (strictly 3-4 sentences) for a municipal civic issues cluster.
 Ward: ${wardName}
 Category: ${category}
 Number of active reports in the last 14 days: ${count}
@@ -1460,7 +1461,7 @@ STRICT constraints:
     };
 
     const modelsToTry = [
-      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
       "gemini-flash-latest"
@@ -1565,7 +1566,7 @@ STRICT INSTRUCTIONS:
     };
 
     const modelsToTry = [
-      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
       "gemini-flash-latest"
@@ -1707,7 +1708,7 @@ STRICT constraints:
     };
 
     const modelsToTry = [
-      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-lite",
       "gemini-flash-latest"
@@ -1778,9 +1779,9 @@ export async function generateNagarMitraChatResponse(params: {
 
   const tryWithContents = async (contentsPayload: any): Promise<boolean> => {
     try {
-      console.log(`[CivicEngine] Calling Gemini model "gemini-2.0-flash" with ${contentsPayload.length} content items...`);
+      console.log(`[CivicEngine] Calling Gemini model "gemini-1.5-flash" with ${contentsPayload.length} content items...`);
       const result = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-1.5-flash",
         contents: contentsPayload,
         config
       });

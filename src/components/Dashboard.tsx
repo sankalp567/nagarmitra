@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { 
   FileText, CheckCircle2, Percent, Clock, AlertTriangle, 
@@ -8,6 +8,35 @@ import {
 import { CivicReport, GANDHINAGAR_WARDS, CATEGORIES } from '../types';
 import { runEscalationWatchdog, resetWatchdogDemoState } from '../utils/reportStore';
 
+// Global in-memory cache to persist bulletins across tab switching (component unmount/remount)
+const bulletinMemoryCache: Record<string, string> = {};
+
+function AnimatedCounter({ value }: { value: number }) {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const duration = 800; // ms
+    const startTime = performance.now();
+
+    const animate = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const ease = progress * (2 - progress);
+      setCount(Math.floor(ease * value));
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        setCount(value);
+      }
+    };
+
+    requestAnimationFrame(animate);
+  }, [value]);
+
+  return <>{count}</>;
+}
+
 interface DashboardProps {
   reports: CivicReport[];
   onSelectReport: (reportId: string) => void;
@@ -16,7 +45,9 @@ interface DashboardProps {
 
 export default function Dashboard({ reports, onSelectReport, onRefreshReports }: DashboardProps) {
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
-  const [simulatedOffsetDays, setSimulatedOffsetDays] = useState<number>(0);
+  const [simulatedOffsetDays, setSimulatedOffsetDays] = useState<number>(() => {
+    return Number(localStorage.getItem('simulatedOffsetDays') || '0');
+  });
   const [watchdogResult, setWatchdogResult] = useState<{
     activated: boolean;
     scannedCount: number;
@@ -27,6 +58,10 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
   const [selectedNotice, setSelectedNotice] = useState<CivicReport | null>(null);
   const [activeDocTab, setActiveDocTab] = useState<string>('primary');
   const [copied, setCopied] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    localStorage.setItem('simulatedOffsetDays', String(simulatedOffsetDays));
+  }, [simulatedOffsetDays]);
 
   const handleSimulateWatchdog = async (daysToIncrement: number) => {
     setIsSimulating(true);
@@ -125,27 +160,18 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
     const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
     const window14d = 14 * 24 * 60 * 60 * 1000;
 
-    return GANDHINAGAR_WARDS.map(ward => {
+    const wardsWithTickets = GANDHINAGAR_WARDS.filter(ward => {
+      const wardReports = reports.filter(r => r.geo.ward === ward.id);
+      return wardReports.length > 0;
+    });
+
+    return wardsWithTickets.map(ward => {
       const wardReports = reports.filter(r => r.geo.ward === ward.id);
       
-      if (wardReports.length === 0) {
-        return {
-          ward,
-          score: 100,
-          total: 0,
-          openCount: 0,
-          resolvedCount: 0,
-          avgAgeDays: 0,
-          avgSeverity: 0,
-          velocity14d: 0,
-          statusColor: 'text-emerald-600 bg-emerald-50 border-emerald-100',
-          badgeColor: 'bg-emerald-500',
-          barColor: 'bg-emerald-500'
-        };
-      }
-
-      const openReports = wardReports.filter(r => r.status !== 'resolved');
-      const resolvedCount = wardReports.filter(r => r.status === 'resolved').length;
+      const openReports = wardReports.filter(r => r.status !== 'resolved' && r.status !== 'confirmed-resolved');
+      const resolvedReports = wardReports.filter(r => r.status === 'resolved' || r.status === 'confirmed-resolved');
+      const openCount = openReports.length;
+      const resolvedCount = resolvedReports.length;
       const total = wardReports.length;
 
       // Report velocity in last 14 days of virtual timeline
@@ -161,54 +187,56 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
         ? openReports.reduce((sum, r) => sum + Math.max(0, (virtualNow - r.createdAt)), 0) / openReports.length / (24 * 60 * 60 * 1000) 
         : 0;
 
-      // Start with base of 100
-      let calculatedScore = 100;
-
-      // 1. Penalty for ratio of open tickets to total tickets (up to 30 pts)
-      const openRatio = total > 0 ? openReports.length / total : 0;
-      calculatedScore -= openRatio * 30;
-
-      // 2. Penalty for average age of open tickets (up to 25 pts)
-      calculatedScore -= Math.min(avgAgeDays * 2.5, 25);
-
-      // 3. Penalty for average severity of open tickets (up to 20 pts)
-      if (avgSeverity > 0) {
-        calculatedScore -= Math.min((avgSeverity - 1) * 5, 20);
-      }
-
-      // 4. Penalty for report velocity in the last 14 days (up to 25 pts)
-      calculatedScore -= Math.min(velocity14d * 3, 25);
-
-      const finalScore = Math.max(0, Math.min(100, Math.round(calculatedScore)));
-
-      let statusColor = 'text-emerald-600 bg-emerald-50 border-emerald-100';
-      let badgeColor = 'bg-emerald-500';
-      let barColor = 'bg-[#3a5a40]';
+      // New Score formula:
+      // - Start at 100
+      // - Subtract 10 per open ticket in the ward
+      // - Subtract 5 additional per ticket that has been escalated (tier > 0)
+      // - Add 15 per resolved ticket
+      // - Clamp between 0 and 100
+      let score = 100;
+      score -= openCount * 10;
       
-      if (finalScore < 50) {
-        statusColor = 'text-rose-600 bg-rose-50 border-rose-100';
-        badgeColor = 'bg-rose-500';
-        barColor = 'bg-rose-500';
-      } else if (finalScore < 80) {
-        statusColor = 'text-amber-600 bg-amber-50 border-amber-100';
-        badgeColor = 'bg-amber-500';
-        barColor = 'bg-amber-500';
+      const escalatedCount = wardReports.filter(r => (r.escalationTier ?? 0) > 0).length;
+      score -= escalatedCount * 5;
+      
+      score += resolvedCount * 15;
+
+      const finalScore = Math.max(0, Math.min(100, score));
+
+      // Colored badge: 0–40 = red "Critical", 41–70 = orange "Needs Attention", 71–100 = green "Healthy"
+      let statusLabel = "Healthy";
+      let statusColor = "text-emerald-700 bg-emerald-50 border-emerald-100";
+      let badgeColor = "bg-emerald-500";
+      let barColor = "bg-emerald-500";
+
+      if (finalScore <= 40) {
+        statusLabel = "Critical";
+        statusColor = "text-rose-700 bg-rose-50 border-rose-100";
+        badgeColor = "bg-rose-500";
+        barColor = "bg-rose-500";
+      } else if (finalScore <= 70) {
+        statusLabel = "Needs Attention";
+        statusColor = "text-amber-700 bg-amber-50 border-amber-100";
+        badgeColor = "bg-amber-500";
+        barColor = "bg-amber-500";
       }
 
       return {
         ward,
         score: finalScore,
         total,
-        openCount: openReports.length,
+        openCount,
         resolvedCount,
         avgAgeDays: Math.round(avgAgeDays * 10) / 10,
         avgSeverity: Math.round(avgSeverity * 10) / 10,
         velocity14d,
+        statusLabel,
         statusColor,
         badgeColor,
         barColor
       };
-    });
+    })
+    .sort((a, b) => a.score - b.score); // sorted from lowest (most urgent) to highest score
   }, [reports, simulatedOffsetDays]);
 
   const atRiskWardsSummary = React.useMemo(() => {
@@ -221,6 +249,57 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
       `- Ward: ${ws.ward.name}, Score: ${ws.score}/100, Open Tickets: ${ws.openCount}/${ws.total}, Average Age: ${ws.avgAgeDays} days, Average Severity: ${ws.avgSeverity}/5, 14d Report Velocity: ${ws.velocity14d} tickets.`
     ).join('\n');
   }, [calculatedWards]);
+
+  // Systemic Pattern Detection (2 or more tickets in same ward and same category)
+  const systemicPatterns = React.useMemo(() => {
+    // 1. Scan all tickets in the store
+    // 2. Open tickets means status !== 'resolved'
+    const openTickets = reports.filter(r => r.status !== 'resolved');
+
+    // 3. Group by category + wardName
+    const groups: { [key: string]: CivicReport[] } = {};
+    openTickets.forEach(r => {
+      const wardId = r.geo.ward;
+      const wardName = r.geo.wardName || GANDHINAGAR_WARDS.find(w => w.id === wardId)?.name || 'Unknown Ward';
+      const category = r.category;
+      const key = `${category}_${wardName}`;
+      
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(r);
+    });
+
+    // 4. Any group with 2+ open tickets = a detected pattern
+    const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
+    const patterns = Object.entries(groups)
+      .filter(([_, tickets]) => tickets.length >= 2)
+      .map(([key, tickets]) => {
+        const first = tickets[0];
+        const wardId = first.geo.ward;
+        const wardName = first.geo.wardName || GANDHINAGAR_WARDS.find(w => w.id === wardId)?.name || 'Unknown Ward';
+        
+        // Calculate X: days elapsed since oldest ticket's creation up to virtualNow, minimum 1
+        const dates = tickets.map(t => t.createdAt);
+        const earliestTime = Math.min(...dates);
+        const days = Math.max(1, Math.ceil((virtualNow - earliestTime) / (1000 * 60 * 60 * 24)));
+
+        const descriptions = tickets.map(t => t.note || t.aiAnalysis?.description || t.category).join('; ');
+        
+        return {
+          id: `pattern_${first.category}_${wardName}`,
+          category: first.category,
+          wardName: wardName,
+          count: tickets.length,
+          days,
+          descriptions,
+          tickets
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    return patterns.slice(0, 3);
+  }, [reports, simulatedOffsetDays]);
 
   React.useEffect(() => {
     if (!atRiskWardsSummary) {
@@ -253,123 +332,53 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
     fetchPrediction();
   }, [atRiskWardsSummary]);
 
-  // State to store generated systemic bulletins
-  const [bulletinCache, setBulletinCache] = useState<{ [clusterId: string]: { text: string; loading: boolean } }>({});
-
-  // Function to calculate Haversine distance
-  const getHaversineDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-    const R = 6371e3; // Earth radius in meters
-    const phi1 = (lat1 * Math.PI) / 180;
-    const phi2 = (lat2 * Math.PI) / 180;
-    const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
-    const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
-
-    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-              Math.cos(phi1) * Math.cos(phi2) *
-              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return R * c; // in meters
-  };
-
-  // 1. Filter reports within the 14-day rolling window of virtual clock, grouped and cached
-  const top3Clusters = React.useMemo(() => {
-    const virtualNow = Date.now() + simulatedOffsetDays * 24 * 60 * 60 * 1000;
-    const rollingWindowMs = 14 * 24 * 60 * 60 * 1000;
-
-    const activeReportsInWindow = reports.filter(r => {
-      const isDocActive = r.status !== 'resolved';
-      const ticketTime = r.createdAt;
-      const inWindow = ticketTime <= virtualNow && ticketTime >= (virtualNow - rollingWindowMs);
-      return isDocActive && inWindow;
+  // State to store generated systemic bulletins, pre-populated from module-level cache
+  const [bulletinCache, setBulletinCache] = useState<{ [clusterId: string]: { text: string; loading: boolean } }>(() => {
+    const initial: { [clusterId: string]: { text: string; loading: boolean } } = {};
+    Object.entries(bulletinMemoryCache).forEach(([key, val]) => {
+      initial[key] = { text: val, loading: false };
     });
-
-    // 2. Identify Type A Clusters (Same ward, same category, 3+ tickets)
-    const sameCategoryGroups: { [key: string]: CivicReport[] } = {};
-    activeReportsInWindow.forEach(r => {
-      const key = `${r.geo.ward}_${r.category}`;
-      if (!sameCategoryGroups[key]) {
-        sameCategoryGroups[key] = [];
-      }
-      sameCategoryGroups[key].push(r);
-    });
-
-    const typeAClusters = Object.entries(sameCategoryGroups)
-      .filter(([_, groupTickets]) => groupTickets.length >= 3)
-      .map(([key, groupTickets]) => {
-        const firstTicket = groupTickets[0];
-        return {
-          id: `same_cat_${key}`,
-          wardId: firstTicket.geo.ward,
-          wardName: firstTicket.geo.wardName,
-          category: firstTicket.category,
-          count: groupTickets.length,
-          tickets: groupTickets,
-          isRelatedCategory: false
-        };
-      });
-
-    // 3. Identify Type B Clusters (Related categories potholes + drainage + water supply/sewage within 500m, 4+ tickets)
-    const relatedTickets = activeReportsInWindow.filter(r => 
-      r.category === 'Potholes & Roads' || r.category === 'Water Supply & Sewage'
-    );
-
-    const typeBClusters = [];
-    const visitedTickets = new Set<string>();
-
-    for (const t of relatedTickets) {
-      if (visitedTickets.has(t.id)) continue;
-      
-      // Find all related tickets within 500m of this ticket 't'
-      const clusterTickets = relatedTickets.filter(other => {
-        const dist = getHaversineDistance(t.geo.lat, t.geo.lng, other.geo.lat, other.geo.lng);
-        return dist <= 500;
-      });
-      
-      if (clusterTickets.length >= 4) {
-        clusterTickets.forEach(ct => visitedTickets.add(ct.id));
-        typeBClusters.push({
-          id: `related_dist_${t.id}`,
-          wardId: t.geo.ward,
-          wardName: t.geo.wardName,
-          category: 'Potholes & Water/Drainage Systemic Issue',
-          count: clusterTickets.length,
-          tickets: clusterTickets,
-          isRelatedCategory: true
-        });
-      }
-    }
-
-    // Combine and get top 3 clusters sorted by size
-    const allClusters = [...typeAClusters, ...typeBClusters]
-      .sort((a, b) => b.count - a.count);
-    return allClusters.slice(0, 3);
-  }, [reports, simulatedOffsetDays]);
+    return initial;
+  });
 
   React.useEffect(() => {
-    top3Clusters.forEach(cluster => {
-      if (bulletinCache[cluster.id]) return; // already cached or loading
+    systemicPatterns.forEach(pattern => {
+      // If we already have a loading/loaded status in component state, do not trigger fetch again
+      if (bulletinCache[pattern.id]) return;
+
+      // Check if it's already in the module level cache
+      if (bulletinMemoryCache[pattern.id]) {
+        setBulletinCache(prev => ({
+          ...prev,
+          [pattern.id]: { text: bulletinMemoryCache[pattern.id], loading: false }
+        }));
+        return;
+      }
 
       // Set loading state
       setBulletinCache(prev => ({
         ...prev,
-        [cluster.id]: { text: '', loading: true }
+        [pattern.id]: { text: '', loading: true }
       }));
 
       const fetchBulletin = async () => {
         try {
-          const ticketDetails = cluster.tickets.map(t => 
+          const ticketDetails = pattern.tickets.map(t => 
             `Ref ID: ${t.referenceId}, Description: ${t.aiAnalysis?.description || t.category}, Note: ${t.note || 'None'}`
           );
+
+          // Build prompt matching user instruction exactly
+          const customPrompt = `You are a municipal intelligence system. Generate a concise civic bulletin for officials about a detected pattern: ${pattern.count} ${pattern.category} issues reported in ${pattern.wardName} within the past ${pattern.days} days. The issues are: ${pattern.descriptions}. Identify the likely root cause, assess urgency, and recommend one immediate departmental action. Keep it under 80 words. No fluff.`;
 
           const response = await fetch('/api/systemic-bulletin', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              wardName: cluster.wardName,
-              category: cluster.category,
-              count: cluster.count,
-              ticketDetails
+              wardName: pattern.wardName,
+              category: pattern.category,
+              count: pattern.count,
+              ticketDetails,
+              customPrompt
             })
           });
 
@@ -379,9 +388,10 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
 
           const data = await response.json();
           if (data.success && data.bulletin) {
+            bulletinMemoryCache[pattern.id] = data.bulletin;
             setBulletinCache(prev => ({
               ...prev,
-              [cluster.id]: { text: data.bulletin, loading: false }
+              [pattern.id]: { text: data.bulletin, loading: false }
             }));
           } else {
             throw new Error(data.error || "Failed to fetch bulletin text");
@@ -390,18 +400,18 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
           console.error("Failed to generate systemic bulletin:", err);
           setBulletinCache(prev => ({
             ...prev,
-            [cluster.id]: { text: 'AI busy — bulletin pending', loading: false }
+            [pattern.id]: { text: 'AI busy — bulletin pending', loading: false }
           }));
         }
       };
 
       fetchBulletin();
     });
-  }, [reports, simulatedOffsetDays]);
+  }, [systemicPatterns]);
 
   // 1. Impact metrics calculation
   const totalReported = reports.length;
-  const totalResolved = reports.filter(r => r.status === 'resolved').length;
+  const totalResolved = reports.filter(r => r.status === 'resolved' || r.status === 'confirmed-resolved').length;
   const resolutionPercentage = totalReported > 0 ? Math.round((totalResolved / totalReported) * 100) : 0;
   
   // Custom mock average resolution time calculation
@@ -419,11 +429,11 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
   reports.forEach(r => {
     if (wardCounts[r.geo.wardName]) {
       wardCounts[r.geo.wardName].count += 1;
-      if (r.status === 'resolved') {
+      if (r.status === 'resolved' || r.status === 'confirmed-resolved') {
         wardCounts[r.geo.wardName].resolved += 1;
       }
     } else {
-      wardCounts[r.geo.wardName] = { id: r.geo.ward, count: 1, resolved: r.status === 'resolved' ? 1 : 0 };
+      wardCounts[r.geo.wardName] = { id: r.geo.ward, count: 1, resolved: (r.status === 'resolved' || r.status === 'confirmed-resolved') ? 1 : 0 };
     }
   });
 
@@ -547,7 +557,7 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
             <div className="flex items-center justify-between gap-2 mb-3">
               <div className="flex items-center gap-2 text-xs font-bold text-[#1a2e1d] uppercase tracking-wider">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping mr-1" />
-                🛡️ Escalation Watchdog Activated
+                Escalation Watchdog Activated
               </div>
               <span className="text-[10px] font-mono font-bold bg-[#3a5a40]/10 text-[#3a5a40] px-2.5 py-0.5 rounded-full">
                 Escalated {watchdogResult.escalatedCount} tickets · {Math.max(0, watchdogResult.stalledCount - watchdogResult.escalatedCount)} more stalled
@@ -693,118 +703,58 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
         )}
       </div>
 
-      {/* "Why this matters" Impact Panel */}
-      <div id="why-this-matters-panel" className="bg-[#fafaf5] border border-[#e2e2d5] rounded-3xl p-6 mb-8 animate-fadeIn">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="p-1.5 bg-[#3a5a40]/10 text-[#3a5a40] rounded-lg">
-            <TrendingUp className="w-4 h-4 text-[#3a5a40]" />
-          </div>
-          <h2 className="text-xs font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
-            Why This Matters: Municipal Redressal Gap
-          </h2>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 border-b border-[#e2e2d5] pb-5 mb-5">
-          {/* Stat 1 */}
-          <div className="flex flex-col">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black font-mono text-[#c25953]">30 &rarr; 48 Days</span>
-              <span className="text-[10px] text-[#8a8a7a] font-mono uppercase">Trend</span>
-            </div>
-            <p className="text-xs text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
-              Civic complaint resolution has drifted from ~30 to ~48 days in three years.{" "}
-              <a href="#" className="text-[#3a5a40] hover:underline font-mono text-[10px] font-bold" onClick={(e) => e.preventDefault()}>(source)</a>
-            </p>
-          </div>
 
-          {/* Stat 2 */}
-          <div className="flex flex-col">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black font-mono text-[#c25953]">~98%</span>
-              <span className="text-[10px] text-[#8a8a7a] font-mono uppercase">Stalled</span>
+      {/* AI Systemic Alerts Section */}
+      {systemicPatterns.length > 0 && (
+        <div id="systemic-alerts-panel" className="bg-[#fffdfa] border border-[#f5d0a9] rounded-3xl p-6 mb-8 animate-fadeIn">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#f5d0a9] pb-4 mb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 bg-rose-500/10 text-rose-700 rounded-lg">
+                <AlertTriangle className="w-5 h-5 text-rose-600 animate-pulse" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+                  AI Systemic Alerts
+                </h2>
+                <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">
+                  Proactive multi-ticket failure patterns autonomously detected by the NagarMitra Intelligence Engine.
+                </p>
+              </div>
             </div>
-            <p className="text-xs text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
-              ~98% of complaints escalated all the way to the Municipal Commissioner still go unresolved.{" "}
-              <a href="#" className="text-[#3a5a40] hover:underline font-mono text-[10px] font-bold" onClick={(e) => e.preventDefault()}>(source)</a>
-            </p>
+            <span className="bg-rose-50 border border-rose-200 text-rose-800 text-[9px] font-mono font-bold px-2.5 py-1 rounded-full uppercase tracking-wider self-start sm:self-center">
+              Active Alerts: {systemicPatterns.length}
+            </span>
           </div>
 
-          {/* Stat 3 */}
-          <div className="flex flex-col">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-black font-mono text-[#3a5a40]">~90%</span>
-              <span className="text-[10px] text-[#8a8a7a] font-mono uppercase">Redressal</span>
-            </div>
-            <p className="text-xs text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
-              Gujarat's SWAGAT 2.0 auto-escalation resolved ~90% of pilot grievances within SLA.{" "}
-              <a href="#" className="text-[#3a5a40] hover:underline font-mono text-[10px] font-bold" onClick={(e) => e.preventDefault()}>(source)</a>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-start gap-2.5 text-xs text-[#1a2e1d] leading-relaxed font-sans font-semibold bg-white p-3 rounded-xl border border-[#e2e2d5]">
-          <Sparkles className="w-4 h-4 text-[#3a5a40] mt-0.5 shrink-0 animate-pulse" />
-          <p>
-            NagarMitra brings SWAGAT 2.0's proven auto-escalation model to the GMC ward level — where no such tool exists today.
-          </p>
-        </div>
-      </div>
-
-      {/* Systemic Alerts Panel */}
-      <div id="systemic-alerts-panel" className="bg-[#fffdfa] border border-[#f5d0a9] rounded-3xl p-6 mb-8 animate-fadeIn">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#f5d0a9] pb-4 mb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="p-1.5 bg-amber-500/10 text-amber-700 rounded-lg">
-              <AlertTriangle className="w-5 h-5 text-amber-600 animate-pulse" />
-            </div>
-            <div>
-              <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
-                AI-Detected Systemic Alerts
-              </h2>
-              <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">Autonomous patterns flagged across active files in Gandhinagar wards within a 14-day rolling window.</p>
-            </div>
-          </div>
-          <span className="bg-amber-100/80 border border-amber-200 text-amber-800 text-[9px] font-mono font-bold px-2.5 py-1 rounded-full uppercase tracking-wider self-start sm:self-center">
-            AI Pattern Scanner
-          </span>
-        </div>
-
-        {top3Clusters.length > 0 ? (
-          <div className="space-y-4">
-            {top3Clusters.map((cluster) => {
-              const cache = bulletinCache[cluster.id];
+          <div className="grid grid-cols-1 gap-4">
+            {systemicPatterns.map((pattern) => {
+              const cache = bulletinCache[pattern.id];
               return (
-                <div key={cluster.id} className="bg-white border border-[#e2e2d5] rounded-2xl p-4 flex flex-col justify-between gap-4 shadow-3xs hover:border-amber-400/60 transition duration-150">
-                  <div className="flex-grow space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-bold text-[#1a2e1d] bg-amber-500/10 border border-amber-200 px-2 py-0.5 rounded-lg font-mono">
-                        {cluster.wardName}
-                      </span>
-                      <span className="text-[10px] font-bold text-[#5a5a40] font-sans">
-                        {cluster.category}
-                      </span>
-                      <span className="text-[10px] font-mono font-black text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-lg">
-                        {cluster.count} Active Reports
-                      </span>
-                      <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
-                        AI-Detected Cluster
+                <div 
+                  key={pattern.id} 
+                  className="bg-white border border-[#e2e2d5] rounded-2xl p-5 flex flex-col justify-between gap-3 shadow-3xs hover:border-rose-400/60 transition duration-150"
+                >
+                  <div className="space-y-3">
+                    {/* Header */}
+                    <div className="text-sm font-extrabold text-[#1a2e1d] flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-start gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full bg-rose-600 mt-1.5 flex-shrink-0" />
+                        <span>
+                          {pattern.count} {pattern.category} Issues — {pattern.wardName}
+                        </span>
+                      </div>
+                      <span className="bg-[#4285F4] text-white text-[11px] font-bold px-2.5 py-0.5 rounded-full shadow-3xs font-sans">
+                        Gemini Intelligence
                       </span>
                     </div>
 
-                    <p className="text-[11px] text-[#5a5a40] font-mono truncate leading-relaxed">
-                      Affected Tickets: {cluster.tickets.map(t => `#${t.referenceId}`).join(', ')}
-                    </p>
-
-                    <div className="bg-[#fafaf5] border border-[#e2e2d5] p-3 rounded-xl mt-2 relative overflow-hidden">
-                      <div className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider mb-1 font-sans flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                        Systemic Risk Bulletin (AI-Detected)
-                      </div>
-                      
+                    {/* Body */}
+                    <div className="bg-[#fafaf5] border border-[#e2e2d5] p-4 rounded-xl relative overflow-hidden">
                       {cache?.loading ? (
                         <div className="flex items-center gap-2 py-1 text-xs text-[#8a8a7a]">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-                          <span>Generating bulletin using Gemini...</span>
+                          <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                          <span>NagarMitra is scanning pattern root causes with Gemini...</span>
                         </div>
                       ) : (
                         <p className="text-xs text-[#2d332d] font-sans leading-relaxed">
@@ -813,16 +763,23 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
                       )}
                     </div>
                   </div>
+
+                  {/* Footer */}
+                  <div className="flex items-center justify-between border-t border-[#f0f0eb] pt-3 text-[10px] text-[#8a8a7a] font-medium font-sans">
+                    <span className="flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-rose-500" />
+                      Auto-detected by NagarMitra Intelligence Engine
+                    </span>
+                    <span className="font-mono text-[9px] bg-gray-100 px-1.5 py-0.5 rounded">
+                      N={pattern.count} · Range: {pattern.days}d
+                    </span>
+                  </div>
                 </div>
               );
             })}
           </div>
-        ) : (
-          <div className="text-xs text-[#8a8a7a] italic p-6 text-center bg-white rounded-2xl border border-dashed border-[#e2e2d5]">
-            No active systemic issue clusters detected in the 14-day rolling window. Municipal services are operating within normal baseline levels across all Gandhinagar wards.
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Civic Health Score Predictive Panel */}
       <div id="civic-health-score-panel" className="bg-white border border-[#e2e2d5] rounded-3xl p-6 mb-8 animate-fadeIn">
@@ -833,10 +790,10 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
             </div>
             <div>
               <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
-                GMC Ward Civic Health Index
+                GMC Ward Civic Health Index — Powered by NagarMitra Intelligence
               </h2>
               <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">
-                Live 0-100 real-time predictive scores based on pending backlog, severity, age of open tickets, and reporting velocity.
+                Real-time civic health score calculation based on active/escalated reports and municipal resolution velocity.
               </p>
             </div>
           </div>
@@ -879,7 +836,7 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
             return (
               <div 
                 key={ws.ward.id} 
-                className="bg-white border border-[#e2e2d5] hover:border-[#3a5a40]/30 rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-3xs transition duration-150"
+                className="bg-white border border-[#e2e2d5] hover:border-[#3a5a40]/30 rounded-2xl p-5 flex flex-col justify-between gap-3 shadow-3xs transition duration-150"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1">
@@ -892,16 +849,16 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
                   </div>
                   
                   {/* Color-Coded Score Badge */}
-                  <div className={`px-2.5 py-1 rounded-xl border font-mono font-bold text-xs ${ws.statusColor} flex items-center gap-1.5 shadow-3xs`}>
+                  <div className={`px-2.5 py-1 rounded-xl border font-mono font-bold text-[10px] uppercase tracking-wider ${ws.statusColor} flex items-center gap-1.5 shadow-3xs`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${ws.badgeColor}`} />
-                    <span>{ws.score}/100</span>
+                    <span>{ws.statusLabel} · {ws.score}</span>
                   </div>
                 </div>
 
                 {/* Interactive Health Progress Bar */}
                 <div className="space-y-1">
                   <div className="flex justify-between text-[9px] text-[#8a8a7a] font-bold">
-                    <span>Health Index</span>
+                    <span>Health Index Score</span>
                     <span>{ws.score}%</span>
                   </div>
                   <div className="w-full bg-[#fafaf5] border border-[#e2e2d5]/60 h-2 rounded-full overflow-hidden">
@@ -912,31 +869,87 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
                   </div>
                 </div>
 
-                {/* Backlog stats */}
-                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#fafaf5] text-center">
-                  <div>
-                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">Pending</span>
-                    <span className="text-[11px] font-bold font-mono text-[#1a2e1d]">
-                      {ws.openCount} <span className="text-[9px] text-[#8a8a7a] font-normal">/ {ws.total}</span>
-                    </span>
-                  </div>
-                  <div>
-                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">Avg Age</span>
-                    <span className="text-[11px] font-bold font-mono text-[#1a2e1d]">
-                      {ws.avgAgeDays}d
-                    </span>
-                  </div>
-                  <div>
-                    <span className="block text-[8px] uppercase tracking-wider text-[#8a8a7a] font-bold">14d Velocity</span>
-                    <span className="text-[11px] font-bold font-mono text-rose-600">
-                      +{ws.velocity14d}
-                    </span>
-                  </div>
+                {/* Number of open issues */}
+                <div className="flex items-center justify-between pt-2 border-t border-[#fafaf5] text-[10px] font-bold text-[#5a5a40]">
+                  <span>Open Issues</span>
+                  <span className="font-mono text-[#1a2e1d]">
+                    {ws.openCount} {ws.openCount === 1 ? 'ticket' : 'tickets'}
+                  </span>
                 </div>
               </div>
             );
           })}
         </div>
+      </div>
+
+      {/* "Why This Matters" Statistics Banner */}
+      <div id="why-this-matters-banner" className="bg-[#fafaf5] border border-[#e2e2d5] rounded-3xl p-6 mb-8 animate-fadeIn">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="p-1.5 bg-[#3a5a40]/10 text-[#3a5a40] rounded-lg">
+            <TrendingUp className="w-4 h-4 text-[#3a5a40]" />
+          </div>
+          <h2 className="text-xs font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+            Why This Matters: Municipal Redressal Gap
+          </h2>
+        </div>
+
+        {/* Grid of 4 Sourced Stats Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-4">
+          {/* Card 1 */}
+          <div className="bg-white border border-[#e2e2d5] rounded-2xl p-5 shadow-xs flex flex-col justify-between hover:border-[#5a7a5a] transition duration-150">
+            <div>
+              <p className="text-2xl font-bold font-mono text-[#c25953]">48 days</p>
+              <p className="text-[11px] text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
+                Average civic complaint resolution time in Indian cities (up from 30 days in 2021 — Praja Foundation)
+              </p>
+            </div>
+          </div>
+
+          {/* Card 2 */}
+          <div className="bg-white border border-[#e2e2d5] rounded-2xl p-5 shadow-xs flex flex-col justify-between hover:border-[#5a7a5a] transition duration-150">
+            <div>
+              <p className="text-2xl font-bold font-mono text-[#c25953]">~98%</p>
+              <p className="text-[11px] text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
+                Escalations to Municipal Commissioner that remain unresolved
+              </p>
+            </div>
+          </div>
+
+          {/* Card 3 */}
+          <div className="bg-white border border-[#e2e2d5] rounded-2xl p-5 shadow-xs flex flex-col justify-between hover:border-[#5a7a5a] transition duration-150">
+            <div>
+              <p className="text-2xl font-bold font-mono text-[#c25953]">6M+</p>
+              <p className="text-[11px] text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
+                Complaints on MoHUA Swachhata app — with no escalation matrix
+              </p>
+            </div>
+          </div>
+
+          {/* Card 4 */}
+          <div className="bg-white border border-[#e2e2d5] rounded-2xl p-5 shadow-xs flex flex-col justify-between hover:border-[#5a7a5a] transition duration-150">
+            <div>
+              <p className="text-2xl font-bold font-mono text-[#3a5a40]">~90%</p>
+              <p className="text-[11px] text-[#2d332d] leading-relaxed mt-2 font-medium font-sans">
+                Grievance SLA met by Gujarat's SWAGAT 2.0 auto-escalation pilot — proof the model works
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Muted footnote */}
+        <p className="text-[11px] text-[#8a8a7a] font-sans font-medium italic mt-4 pl-1">
+          NagarMitra applies this proven model at the GMC ward level — where no such tool exists today.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between mb-4 mt-2">
+        <h3 className="text-xs font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+          Municipal Performance Metrics
+        </h3>
+        <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold px-3 py-1 rounded-full uppercase tracking-wider flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          LIVE DEMO — Gandhinagar Civic Data
+        </span>
       </div>
 
       {/* 1. IMPACT STRIP */}
@@ -945,7 +958,9 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
         <div className="bg-white border border-[#e2e2d5] rounded-3xl p-5 shadow-xs flex items-center justify-between hover:border-[#5a7a5a] transition duration-150">
           <div>
             <span className="text-[10px] uppercase tracking-wider font-extrabold text-[#8a8a7a]">Total Grievances</span>
-            <p className="text-2xl font-bold font-mono text-[#1a2e1d] mt-1">{totalReported}</p>
+            <p className="text-2xl font-bold font-mono text-[#1a2e1d] mt-1">
+              <AnimatedCounter value={totalReported} />
+            </p>
             <span className="text-[10px] text-[#8a8a7a] mt-1 block">Accumulated tickets</span>
           </div>
           <div className="p-3 bg-[#fafaf5] text-[#8a8a7a] rounded-xl border border-[#e2e2d5]">

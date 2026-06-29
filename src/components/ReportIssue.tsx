@@ -67,6 +67,7 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
   const [duplicateFound, setDuplicateFound] = useState<boolean>(false);
   const [duplicateMessage, setDuplicateMessage] = useState<string>('');
   const [isWhyClassificationOpen, setIsWhyClassificationOpen] = useState<boolean>(false);
+  const [howItWorksExpanded, setHowItWorksExpanded] = useState<boolean>(false);
 
   // New states for geographic boundary checking
   const [showBoundaryAlert, setShowBoundaryAlert] = useState<boolean>(false);
@@ -76,18 +77,26 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
   // HMAC Session Token implementation
   const [sessionToken, setSessionToken] = useState<string | null>(null);
 
-  const fetchSessionToken = async (): Promise<string | null> => {
-    try {
-      const response = await fetch('/api/token');
-      if (response.ok) {
-        const data = await response.json();
-        setSessionToken(data.token);
-        console.log("[Token System] Session token acquired successfully.");
-        return data.token;
+  const fetchSessionToken = async (retries = 3, delayMs = 2000): Promise<string | null> => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch('/api/token');
+        if (response.ok) {
+          const data = await response.json();
+          setSessionToken(data.token);
+          console.log("[Token System] Session token acquired successfully.");
+          return data.token;
+        } else {
+          console.warn(`[Token System] Attempt ${attempt} failed with status: ${response.status}`);
+        }
+      } catch (err) {
+        console.warn(`[Token System] Attempt ${attempt} failed to fetch session token:`, err);
       }
-    } catch (err) {
-      console.error("[Token System] Failed to fetch session token:", err);
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, delayMs * attempt));
+      }
     }
+    console.error("[Token System] Max retries reached. Failed to fetch session token.");
     return null;
   };
 
@@ -334,14 +343,16 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
   const [manualLng, setManualLng] = useState<string>('72.6369');
   const [showManualCoords, setShowManualCoords] = useState<boolean>(false);
 
+  const stepStartTimes = useRef<{ [key: string]: number }>({});
+
   // Interactive Agent Activity pipeline
   const [pipelineSteps, setPipelineSteps] = useState([
-    { id: '1', label: 'Uploading Photo to Cloud Archive', status: 'pending', detail: 'Compressing and securing upload to Firebase storage.' },
-    { id: '2', label: 'Extracting Damages via Gemini Vision', status: 'pending', detail: 'Running object detection for civic safety hazards.' },
-    { id: 'dup_check', label: 'Checking for duplicate reports nearby…', status: 'pending', detail: 'Analyzing description similarity and geographic proximity.' },
-    { id: '3', label: 'Routing affected Wards', status: 'pending', detail: 'Geocoding municipal ward boundaries in Gandhinagar.' },
-    { id: '4', label: 'Drafting Trilingual Compliance Letters', status: 'pending', detail: 'Constructing English, Hindi & Gujarati administrative formal letters.' },
-    { id: '5', label: 'Dispatching to GMC Nodal Officer', status: 'pending', detail: 'Registering grievance ticket into Firestore registry.' }
+    { id: '1', label: 'Uploading Photo to Cloud Archive', status: 'pending' as const, detail: 'Compressing and securing upload to Firebase storage.', duration: undefined as string | undefined },
+    { id: '2', label: 'Extracting Damages via Gemini Vision', status: 'pending' as const, detail: 'Running object detection for civic safety hazards.', duration: undefined as string | undefined },
+    { id: 'dup_check', label: 'Checking for duplicate reports nearby…', status: 'pending' as const, detail: 'Analyzing description similarity and geographic proximity.', duration: undefined as string | undefined },
+    { id: '3', label: 'Routing affected Wards', status: 'pending' as const, detail: 'Geocoding municipal ward boundaries in Gandhinagar.', duration: undefined as string | undefined },
+    { id: '4', label: 'Drafting Trilingual Compliance Letters', status: 'pending' as const, detail: 'Constructing English, Hindi & Gujarati administrative formal letters.', duration: undefined as string | undefined },
+    { id: '5', label: 'Dispatching to GMC Nodal Officer', status: 'pending' as const, detail: 'Registering grievance ticket into Firestore registry.', duration: undefined as string | undefined }
   ]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -482,7 +493,8 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
     setDuplicateMessage('');
 
     // Initialise pipeline states
-    const resetPipeline = pipelineSteps.map(step => ({ ...step, status: 'pending' as const }));
+    const resetPipeline = pipelineSteps.map(step => ({ ...step, status: 'pending' as const, duration: undefined }));
+    stepStartTimes.current = {};
     setPipelineSteps(resetPipeline);
 
     const targetLat = gpsLocation?.lat || Number(manualLat) || 23.2156;
@@ -501,17 +513,20 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       }
 
       // Step 1: Uploading Photo (Bypassed Firebase Storage upload; instantly ready)
+      stepStartTimes.current['1'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === '1' ? { ...s, status: 'running' } : s));
       await new Promise(r => setTimeout(r, 400)); // smooth visual pacing
       setPipelineSteps(prev => prev.map(s => s.id === '1' ? { 
         ...s, 
         status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['1'] || Date.now())) / 1000).toFixed(1)}s`,
         detail: photoUrl 
           ? 'Photo compressed client-side (max 900px, quality 60%). Firebase Storage upload bypassed for optimal speed.'
           : 'No photo provided. Reporting in voice/text fallback mode.'
       } : s));
 
       // Step 2: Extracting damages (Call real Gemini API analysis!) - Starts instantly!
+      stepStartTimes.current['2'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === '2' ? { ...s, status: 'running' } : s));
       
       let tokenToUse = sessionToken;
@@ -601,9 +616,14 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       });
 
       await new Promise(r => setTimeout(r, 600));
-      setPipelineSteps(prev => prev.map(s => s.id === '2' ? { ...s, status: 'completed' } : s));
+      setPipelineSteps(prev => prev.map(s => s.id === '2' ? { 
+        ...s, 
+        status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['2'] || Date.now())) / 1000).toFixed(1)}s`
+      } : s));
 
       // NEW STEP: Checking for duplicates nearby!
+      stepStartTimes.current['dup_check'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === 'dup_check' ? { ...s, status: 'running' } : s));
       
       const existingReports = await fetchReports();
@@ -666,11 +686,12 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
         setPipelineSteps(prev => prev.map(s => s.id === 'dup_check' ? { 
           ...s, 
           status: 'completed',
+          duration: `${((Date.now() - (stepStartTimes.current['dup_check'] || Date.now())) / 1000).toFixed(1)}s`,
           detail: `Duplicate identified (distance: ${minDistance.toFixed(1)}m). Added reporter to Ticket #${duplicateTicket!.id}.`
         } : s));
 
         // Mark subsequent steps as completed/bypassed
-        setPipelineSteps(prev => prev.map(s => ['3', '4', '5'].includes(s.id) ? { ...s, status: 'completed', detail: 'Bypassed - merged with duplicate ticket.' } : s));
+        setPipelineSteps(prev => prev.map(s => ['3', '4', '5'].includes(s.id) ? { ...s, status: 'completed', duration: '0.1s', detail: 'Bypassed - merged with duplicate ticket.' } : s));
 
         setResultReport(updatedTicket);
         onReportCreated(updatedTicket);
@@ -681,20 +702,32 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       setPipelineSteps(prev => prev.map(s => s.id === 'dup_check' ? { 
         ...s, 
         status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['dup_check'] || Date.now())) / 1000).toFixed(1)}s`,
         detail: 'Checked open registries nearby. No matching duplicate identified.'
       } : s));
 
       // Step 3: Ward routing
+      stepStartTimes.current['3'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === '3' ? { ...s, status: 'running' } : s));
       await new Promise(r => setTimeout(r, 600));
-      setPipelineSteps(prev => prev.map(s => s.id === '3' ? { ...s, status: 'completed' } : s));
+      setPipelineSteps(prev => prev.map(s => s.id === '3' ? { 
+        ...s, 
+        status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['3'] || Date.now())) / 1000).toFixed(1)}s`
+      } : s));
 
       // Step 4: Trilingual letters
+      stepStartTimes.current['4'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === '4' ? { ...s, status: 'running' } : s));
       await new Promise(r => setTimeout(r, 600));
-      setPipelineSteps(prev => prev.map(s => s.id === '4' ? { ...s, status: 'completed' } : s));
+      setPipelineSteps(prev => prev.map(s => s.id === '4' ? { 
+        ...s, 
+        status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['4'] || Date.now())) / 1000).toFixed(1)}s`
+      } : s));
 
       // Step 5: Finalizing record in cloud database (Non-blocking background save)
+      stepStartTimes.current['5'] = Date.now();
       setPipelineSteps(prev => prev.map(s => s.id === '5' ? { ...s, status: 'running' } : s));
       
       // 1. Generate client-side report immediately with a local ID
@@ -727,7 +760,11 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       });
 
       await new Promise(r => setTimeout(r, 400)); // smooth visual pacing
-      setPipelineSteps(prev => prev.map(s => s.id === '5' ? { ...s, status: 'completed' } : s));
+      setPipelineSteps(prev => prev.map(s => s.id === '5' ? { 
+        ...s, 
+        status: 'completed',
+        duration: `${((Date.now() - (stepStartTimes.current['5'] || Date.now())) / 1000).toFixed(1)}s`
+      } : s));
 
       // Complete and transition instantly
       setResultReport(newlyCreatedReport);
@@ -735,7 +772,11 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
     } catch (err: any) {
       console.error(err);
       setSubmissionError(err?.message || String(err));
-      setPipelineSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'failed' } : s));
+      setPipelineSteps(prev => prev.map(s => s.status === 'running' ? { 
+        ...s, 
+        status: 'failed',
+        duration: `${((Date.now() - (stepStartTimes.current[s.id] || Date.now())) / 1000).toFixed(1)}s`
+      } : s));
       setIsSubmitting(true);
     }
   };
@@ -786,6 +827,106 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
         <div className="md:col-span-7 bg-white rounded-3xl border border-[#e2e2d5] shadow-sm p-6">
           {!isSubmitting ? (
             <form onSubmit={handleSubmitReport} className="space-y-6">
+              {/* How NagarMitra Works Section - Collapsible, visible before photo upload */}
+              {!photoUrl && (
+                <div className="border border-[#e2e2d5] bg-[#fafaf5]/40 rounded-2xl p-4">
+                  <button
+                    type="button"
+                    onClick={() => setHowItWorksExpanded(!howItWorksExpanded)}
+                    className="w-full flex items-center justify-between text-left font-sans text-xs font-bold text-[#3a5a40] hover:text-[#1a2e1d] transition cursor-pointer"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <HelpCircle className="w-3.5 h-3.5 text-[#3a5a40]" />
+                      <span>How NagarMitra Works</span>
+                    </span>
+                    <span className="text-[11px] font-extrabold uppercase tracking-wider font-mono flex items-center gap-0.5">
+                      {howItWorksExpanded ? "See how it works ▲" : "See how it works ▼"}
+                    </span>
+                  </button>
+
+                  {howItWorksExpanded && (
+                    <div className="mt-4 border-t border-[#e2e2d5]/60 pt-4 animate-fadeIn">
+                      <div className="flex flex-col divide-y divide-[#e2e2d5]/60">
+                        {/* Step 1 */}
+                        <div className="flex flex-col sm:flex-row sm:items-center py-3.5 gap-3 sm:gap-6">
+                          <div className="shrink-0">
+                            <span className="inline-block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2 py-0.5 rounded-md min-w-[55px] text-center">
+                              STEP 1
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 font-bold text-xs text-[#1a2e1d] font-sans sm:w-48 shrink-0">
+                            <span>Vision Analyst</span>
+                          </div>
+                          <div className="flex-1 text-[11px] text-[#5a5a40] leading-relaxed font-sans">
+                            Gemini sees the issue, scores severity 1–5, identifies hazards
+                          </div>
+                        </div>
+
+                        {/* Step 2 */}
+                        <div className="flex flex-col sm:flex-row sm:items-center py-3.5 gap-3 sm:gap-6">
+                          <div className="shrink-0">
+                            <span className="inline-block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2 py-0.5 rounded-md min-w-[55px] text-center">
+                              STEP 2
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 font-bold text-xs text-[#1a2e1d] font-sans sm:w-48 shrink-0">
+                            <span>Geo-Router</span>
+                          </div>
+                          <div className="flex-1 text-[11px] text-[#5a5a40] leading-relaxed font-sans">
+                            Maps your location to the correct GMC ward and department officer
+                          </div>
+                        </div>
+
+                        {/* Step 3 */}
+                        <div className="flex flex-col sm:flex-row sm:items-center py-3.5 gap-3 sm:gap-6">
+                          <div className="shrink-0">
+                            <span className="inline-block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2 py-0.5 rounded-md min-w-[55px] text-center">
+                              STEP 3
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 font-bold text-xs text-[#1a2e1d] font-sans sm:w-48 shrink-0">
+                            <span>Duplicate Detector</span>
+                          </div>
+                          <div className="flex-1 text-[11px] text-[#5a5a40] leading-relaxed font-sans">
+                            Checks for similar reports within 60m — merges as co-witness if found
+                          </div>
+                        </div>
+
+                        {/* Step 4 */}
+                        <div className="flex flex-col sm:flex-row sm:items-center py-3.5 gap-3 sm:gap-6">
+                          <div className="shrink-0">
+                            <span className="inline-block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2 py-0.5 rounded-md min-w-[55px] text-center">
+                              STEP 4
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 font-bold text-xs text-[#1a2e1d] font-sans sm:w-48 shrink-0">
+                            <span>Complaint Drafter</span>
+                          </div>
+                          <div className="flex-1 text-[11px] text-[#5a5a40] leading-relaxed font-sans">
+                            Writes a formal complaint in English, Hindi & Gujarati instantly
+                          </div>
+                        </div>
+
+                        {/* Step 5 */}
+                        <div className="flex flex-col sm:flex-row sm:items-center py-3.5 gap-3 sm:gap-6">
+                          <div className="shrink-0">
+                            <span className="inline-block text-[10px] font-extrabold text-[#3a5a40] uppercase tracking-wider font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2 py-0.5 rounded-md min-w-[55px] text-center">
+                              STEP 5
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 font-bold text-xs text-[#1a2e1d] font-sans sm:w-48 shrink-0">
+                            <span>Escalation Watchdog</span>
+                          </div>
+                          <div className="flex-1 text-[11px] text-[#5a5a40] leading-relaxed font-sans">
+                            Autonomously escalates every 7 days until resolved — up to RTI + SWAGAT + CPGRAMS
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Photo Upload Area */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-[#8a8a7a] mb-2">
@@ -1127,7 +1268,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                         onClick={confirmTranscript}
                         className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-[#3a5a40] text-white font-bold text-xs uppercase rounded-lg shadow-sm hover:bg-[#2f4934] transition cursor-pointer"
                       >
-                        ✅ Yes, use this
+                        Yes, use this
                       </button>
                       <button
                         type="button"
@@ -1135,7 +1276,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                         onClick={cancelConfirmTranscript}
                         className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-white text-rose-600 border border-[#e2e2d5] font-bold text-xs uppercase rounded-lg hover:bg-rose-50 transition cursor-pointer"
                       >
-                        ❌ Re-record
+                        Re-record
                       </button>
                     </div>
                   </div>
@@ -1203,10 +1344,15 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                       )}
                     </div>
                     <div className="flex-1">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <p className={`text-xs font-bold uppercase tracking-wider ${step.status === 'completed' ? 'text-[#1a2e1d]' : step.status === 'running' ? 'text-[#3a5a40]' : 'text-[#8a8a7a]'}`}>
                           {step.label}
                         </p>
+                        {step.duration && (
+                          <span className="text-[10px] font-mono font-bold text-[#3a5a40] bg-[#f0f9f0] px-1.5 py-0.5 rounded border border-[#d5edd5]">
+                            {step.duration}
+                          </span>
+                        )}
                       </div>
                       <p className="text-[11px] text-[#8a8a7a] mt-1 font-sans leading-relaxed">{step.detail}</p>
                     </div>
@@ -1225,15 +1371,45 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                     <CheckCircle2 className="w-6 h-6 animate-bounce" />
                   </div>
                   {duplicateFound ? (
-                    <>
-                      <h4 className="text-[#1a2e1d] font-bold font-sans text-sm">Nearby Duplicate Detected</h4>
-                      <p className="text-[#1a2e1d] text-xs mt-2 p-3 bg-[#f0f5f1] border border-[#d2e2d5] rounded-xl font-medium leading-relaxed">
-                        {duplicateMessage}
-                      </p>
-                      <p className="text-[#8a8a7a] text-[10px] font-mono mt-2">
-                        Ticket Reference ID: <span className="font-mono font-bold text-[#1a2e1d]">{resultReport.id}</span>
-                      </p>
-                    </>
+                    <div className="text-left">
+                      <h4 className="text-[#1a2e1d] font-bold font-sans text-sm text-center mb-4">Grievance Processed Successfully</h4>
+                      
+                      {/* Highlighted green card */}
+                      <div className="bg-[#f0f9f0] border border-emerald-500/30 rounded-2xl p-4 shadow-3xs font-sans text-emerald-900">
+                        <div className="flex items-start gap-2.5 mb-3">
+                          <div className="font-extrabold text-xs text-emerald-950 uppercase tracking-wide leading-tight">
+                            Co-Witness Added — Your report strengthens an existing complaint
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 text-xs border-t border-emerald-500/10 pt-2.5">
+                          <div className="flex items-center justify-between text-emerald-850">
+                            <span className="font-medium">Merged with Ticket ID:</span>
+                            <span className="font-mono font-bold text-emerald-950 bg-white/70 px-1.5 py-0.5 rounded border border-emerald-500/10">
+                              {resultReport.id}
+                            </span>
+                          </div>
+                          
+                          <div className="flex items-center justify-between text-emerald-850">
+                            <span className="font-medium">Complaint Category:</span>
+                            <span className="font-bold text-emerald-950">
+                              {resultReport.category}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-emerald-850 bg-emerald-600/5 p-2 rounded-lg border border-emerald-600/10 mt-1">
+                            <span className="font-bold text-emerald-900">Total Co-Witnesses:</span>
+                            <span className="font-extrabold text-[#3a5a40] text-xs font-sans">
+                              This ticket now has {resultReport.coWitnesses?.length || 1} witnesses
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="text-[10px] text-emerald-700/90 italic font-medium mt-3 text-center border-t border-emerald-500/10 pt-2 font-sans">
+                          More witnesses = stronger case for municipal action
+                        </div>
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <h4 className="text-[#1a2e1d] font-bold font-sans text-sm">Grievance Registered Successfully</h4>
@@ -1241,15 +1417,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                     </>
                   )}
 
-                  {resultReport.visionError && (
-                    <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-3 text-xs text-left my-3 font-sans font-medium flex items-start gap-2 animate-fadeIn">
-                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                      <div>
-                        <span className="font-bold block text-rose-900">Local Compliance Fallback Active</span>
-                        <span className="text-[11px] leading-relaxed block mt-0.5 text-rose-700 font-mono font-semibold">{resultReport.visionError}</span>
-                      </div>
-                    </div>
-                  )}
+
                   
                    {/* Collapsible "Why this classification" card */}
                    {resultReport.classificationReasoning && resultReport.alternativeCategories && resultReport.severityFactors && (

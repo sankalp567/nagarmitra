@@ -31,6 +31,28 @@ export interface FirestoreErrorInfo {
   }
 }
 
+export function isQuotaOrOfflineError(error: any): boolean {
+  if (!error) return false;
+  const msg = String(error.message || error.code || error).toLowerCase();
+  return (
+    msg.includes("quota") || 
+    msg.includes("exhausted") || 
+    msg.includes("offline") || 
+    msg.includes("permission-denied") ||
+    msg.includes("permission denied") ||
+    msg.includes("rate limit") ||
+    msg.includes("unavailable")
+  );
+}
+
+export function logStoreError(message: string, error: any) {
+  if (isQuotaOrOfflineError(error)) {
+    console.warn(`${message} (Quota or Offline Fallback):`, error?.message || error);
+  } else {
+    console.error(message, error);
+  }
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -48,7 +70,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  if (isQuotaOrOfflineError(error)) {
+    console.warn('Firestore Access Limited (quota or permission): ', JSON.stringify(errInfo));
+  } else {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  }
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -145,40 +171,32 @@ export function getLocalReports(): CivicReport[] {
 
 export function saveLocalReports(reports: CivicReport[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(reports));
+    // Sort by createdAt desc to prioritize the most recent reports
+    const sorted = [...reports].sort((a, b) => b.createdAt - a.createdAt);
+    
+    // Limit to the latest 30 reports to keep localStorage footprint ultra-lightweight
+    const limited = sorted.slice(0, 30);
+
+    // Strip heavy photoUrl fields
+    const lightweightReports = limited.map(r => ({
+      ...r,
+      photoUrl: ""
+    }));
+
+    // Clear the key first to prevent transient double-allocation quota issues
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(lightweightReports));
   } catch (e) {
-    console.warn("[reportStore] Local storage write failed, attempting to prune large images to fit quota:", e);
+    console.warn("[reportStore] Local storage write failed, trying even smaller set (latest 10):", e);
     try {
-      // Create a copy of the reports to prune
-      const prunedReports = reports.map((r, index) => {
-        // If the photoUrl is a base64 string and this is not one of the 2 most recent reports, replace with a standard lightweight placeholder
-        if (r.photoUrl && r.photoUrl.startsWith('data:') && index >= 2) {
-          return {
-            ...r,
-            photoUrl: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?auto=format&fit=crop&w=600&q=80"
-          };
-        }
-        return r;
-      });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(prunedReports));
-      console.log("[reportStore] Successfully saved reports to LocalStorage after pruning older base64 images.");
-    } catch (e2) {
-      console.error("[reportStore] Pruning base64 images still exceeded quota. Slicing reports to latest 15 and removing all base64:", e2);
-      try {
-        const ultraPruned = reports.slice(0, 15).map(r => {
-          if (r.photoUrl && r.photoUrl.startsWith('data:')) {
-            return {
-              ...r,
-              photoUrl: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?auto=format&fit=crop&w=600&q=80"
-            };
-          }
-          return r;
-        });
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(ultraPruned));
-        console.log("[reportStore] Successfully saved ultra-pruned reports to LocalStorage.");
-      } catch (e3) {
-        console.error("[reportStore] Completely failed to write to local storage even with ultra-pruned list:", e3);
-      }
+      const ultraPruned = [...reports]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 10)
+        .map(r => ({ ...r, photoUrl: "" }));
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(ultraPruned));
+    } catch (innerErr) {
+      console.error("[reportStore] Severe local storage write failure even with 10 reports:", innerErr);
     }
   }
 }
@@ -250,7 +268,7 @@ export async function fetchReports(): Promise<CivicReport[]> {
 
     return serverReports;
   } catch (error) {
-    console.error("Failed to query Firestore reports. Falling back to local storage:", error);
+    logStoreError("Failed to query Firestore reports. Falling back to local storage:", error);
     return getLocalReports();
   }
 }
@@ -300,7 +318,7 @@ export async function createReport(reportData: Omit<CivicReport, 'id'>): Promise
       id: docRef.id
     };
   } catch (error) {
-    console.error("Firestore report submit failed. Saving locally as fallback:", error);
+    logStoreError("Firestore report submit failed. Saving locally as fallback:", error);
     const local = getLocalReports();
     const newReport: CivicReport = {
       ...sanitized,
@@ -343,7 +361,7 @@ export async function updateReportStatus(reportId: string, status: IssueStatus):
     }
     return true;
   } catch (error) {
-    console.error("Firestore status modify failed. Attempting local edit:", error);
+    logStoreError("Firestore status modify failed. Attempting local edit:", error);
     const local = getLocalReports();
     const index = local.findIndex(r => r.id === reportId);
     if (index !== -1) {
@@ -385,7 +403,7 @@ export async function updateReportReasoning(
     });
     return true;
   } catch (error) {
-    console.error("Firestore reasoning update failed:", error);
+    logStoreError("Firestore reasoning update failed:", error);
     return index !== -1;
   }
 }
@@ -418,7 +436,91 @@ export async function addCoWitness(reportId: string, email: string): Promise<boo
     }
     return true;
   } catch (error) {
-    console.error("Firestore witness attachment failed:", error);
+    logStoreError("Firestore witness attachment failed:", error);
+    return index !== -1;
+  }
+}
+
+export async function citizenEscalateReport(
+  reportId: string,
+  nextTier: number,
+  nextOfficer: string,
+  timelineEntry: ActionTimelineEntry
+): Promise<boolean> {
+  const local = getLocalReports();
+  const index = local.findIndex(r => r.id === reportId);
+  if (index !== -1) {
+    local[index].status = 'Disputed' as IssueStatus;
+    local[index].escalationTier = nextTier;
+    local[index].officer = nextOfficer;
+    if (!local[index].actionTimeline) {
+      local[index].actionTimeline = [];
+    }
+    local[index].actionTimeline.push(timelineEntry);
+    saveLocalReports(local);
+  }
+
+  if (!db || reportId.startsWith('rep_local_')) {
+    return index !== -1;
+  }
+
+  try {
+    const docRef = doc(db, 'reports', reportId);
+    try {
+      await updateDoc(docRef, {
+        status: 'Disputed',
+        escalationTier: nextTier,
+        officer: nextOfficer,
+        actionTimeline: arrayUnion(timelineEntry)
+      });
+    } catch (error: any) {
+      if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
+        handleFirestoreError(error, OperationType.UPDATE, `reports/${reportId}`);
+      }
+      throw error;
+    }
+    return true;
+  } catch (error) {
+    logStoreError("Firestore citizen escalation failed:", error);
+    return index !== -1;
+  }
+}
+
+export async function confirmReportResolution(
+  reportId: string,
+  timelineEntry: ActionTimelineEntry
+): Promise<boolean> {
+  const local = getLocalReports();
+  const index = local.findIndex(r => r.id === reportId);
+  if (index !== -1) {
+    local[index].status = 'confirmed-resolved' as IssueStatus;
+    if (!local[index].actionTimeline) {
+      local[index].actionTimeline = [];
+    }
+    local[index].actionTimeline.push(timelineEntry);
+    saveLocalReports(local);
+  }
+
+  if (!db || reportId.startsWith('rep_local_')) {
+    return index !== -1;
+  }
+
+  try {
+    const docRef = doc(db, 'reports', reportId);
+    try {
+      await updateDoc(docRef, {
+        status: 'confirmed-resolved',
+        actionTimeline: arrayUnion(timelineEntry)
+      });
+    } catch (error: any) {
+      if (error?.code === 'permission-denied' || error?.message?.includes('permission') || error?.message?.includes('Permission')) {
+        handleFirestoreError(error, OperationType.UPDATE, `reports/${reportId}`);
+      }
+      throw error;
+    }
+    return true;
+  } catch (error) {
+    logStoreError("Firestore confirm resolution failed:", error);
     return index !== -1;
   }
 }
@@ -746,7 +848,7 @@ export async function updateReportAfterWatchdogEscalation(
     }
     return true;
   } catch (error) {
-    console.error("Firestore watchdog status modify failed. Attempting local edit:", error);
+    logStoreError("Firestore watchdog status modify failed. Attempting local edit:", error);
     const local = getLocalReports();
     const index = local.findIndex(r => r.id === reportId);
     if (index !== -1) {
@@ -835,7 +937,7 @@ export async function resetWatchdogDemoState(): Promise<boolean> {
     }
     return true;
   } catch (error) {
-    console.error("Failed to reset Firestore demo state, falling back to local:", error);
+    logStoreError("Failed to reset Firestore demo state, falling back to local:", error);
     const local = getLocalReports();
     const updated = local.map(r => {
       if (r.status === 'escalated') {

@@ -102,6 +102,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import firebaseConfig from "./firebase-applet-config.json";
 import { applySecurityMiddleware } from "./server/security";
 import { 
+  ai,
   analyzeIssueImage, 
   generateEscalationNotice, 
   generateSystemicBulletin, 
@@ -418,7 +419,7 @@ async function startServer() {
   // API Route - Generate Systemic Risk Bulletin
   app.post("/api/systemic-bulletin", async (req: express.Request, res: express.Response) => {
     try {
-      const { wardName, category, count, ticketDetails } = req.body;
+      const { wardName, category, count, ticketDetails, customPrompt } = req.body;
       
       console.log(`[Server API] Received /api/systemic-bulletin request for Ward: ${wardName}, Category: ${category}, Count: ${count}`);
       
@@ -426,7 +427,8 @@ async function startServer() {
         wardName: wardName || "General Area",
         category: category || "Civic Issue",
         count: Number(count) || 3,
-        ticketDetails: ticketDetails || []
+        ticketDetails: ticketDetails || [],
+        customPrompt: customPrompt || undefined
       });
 
       return res.status(200).json({
@@ -476,111 +478,49 @@ async function startServer() {
   // API Route - NagarMitra General Civic Chat Agent
   app.post("/api/chat", async (req: express.Request, res: express.Response) => {
     try {
-      const { message, history } = req.body;
+      const { message } = req.body;
       const apiKey = process.env.GEMINI_API_KEY;
       
       console.log(`[Server API] Received /api/chat request`);
       
       if (!apiKey || apiKey === "DummyKey" || apiKey.includes("dummy")) {
+        const offlineText = "Hello! I am NagarMitra, your civic assistant. Currently, I am in offline simulation mode. To file a civic complaint in Gandhinagar, please use the 'Report Issue' tab. You can track your ticket, use your RTI rights under the RTI Act 2005, or escalate issues to SWAGAT 2.0. Feel free to ask me anything about Gandhinagar municipal procedures!";
         return res.status(200).json({
           success: true,
-          response: "Hello! I am NagarMitra, your civic assistant. Currently, I am in offline simulation mode. To file a civic complaint in Gandhinagar, please use the 'Report Issue' tab. You can track your ticket, use your RTI rights under the RTI Act 2005, or escalate issues to SWAGAT 2.0. Feel free to ask me anything about Gandhinagar municipal procedures!",
-          reply: "Hello! I am NagarMitra, your civic assistant. Currently, I am in offline simulation mode. To file a civic complaint in Gandhinagar, please use the 'Report Issue' tab. You can track your ticket, use your RTI rights under the RTI Act 2005, or escalate issues to SWAGAT 2.0. Feel free to ask me anything about Gandhinagar municipal procedures!",
+          response: offlineText,
+          reply: offlineText,
           sources: [],
           isStub: true
         });
       }
 
-      const aiClient = new GoogleGenAI({
-        apiKey: apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          }
+      const response = await ai.models.generateContent({
+        model: 'gemini-1.5-flash',
+        contents: message || "",
+        config: {
+          systemInstruction: 'You are NagarMitra, a civic assistant for Gandhinagar Municipal Corporation (GMC). Help citizens with: filing civic complaints, GMC department responsibilities, RTI Act 2005 rights and procedures, SWAGAT 2.0 and CPGRAMS escalation processes, ward office contacts, and municipal bylaws. Be concise, factual, and cite sources when available. Always reply in the same language the user used (Hindi, Gujarati, or English).',
         }
       });
 
-      const systemInstruction = "You are NagarMitra, a civic assistant for Gandhinagar Municipal Corporation (GMC). You help citizens understand: how to file civic complaints, GMC department responsibilities, RTI Act 2005 rights and procedures, SWAGAT 2.0 and CPGRAMS escalation processes, ward office contacts, and municipal bylaws. Be concise, factual, and cite sources when possible. Always reply in the same language the user used (Hindi, Gujarati, or English).";
+      const reply = response.text || "";
+      const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
+        ?.map((c: any) => ({ title: c.web?.title || '', uri: c.web?.uri || '' }))
+        .filter((s: any) => s.uri) ?? [];
 
-      const config = {
-        systemInstruction,
-        temperature: 0.5,
-        tools: [{ googleSearch: {} }]
-      };
-
-      let responseText = "";
-      const sources: Array<{ title: string; uri: string }> = [];
-      let success = false;
-
-      const executeGenerate = async (contentsPayload: any) => {
-        const result = await aiClient.models.generateContent({
-          model: "gemini-2.0-flash",
-          contents: contentsPayload,
-          config
-        });
-        if (result && result.text) {
-          responseText = result.text.trim();
-          const searchGroundingMetadata = result.candidates?.[0]?.groundingMetadata;
-          const chunks = searchGroundingMetadata?.groundingChunks;
-          if (Array.isArray(chunks)) {
-            for (const chunk of chunks) {
-              if (chunk.web?.uri) {
-                sources.push({
-                  title: chunk.web.title || chunk.web.uri,
-                  uri: chunk.web.uri
-                });
-              }
-            }
-          }
-          return true;
-        }
-        return false;
-      };
-
-      if (history && history.length > 0) {
-        try {
-          const contentsPayload = history.map((h: any) => ({
-            role: h.role === 'user' ? 'user' : 'model',
-            parts: [{ text: h.text }]
-          }));
-          contentsPayload.push({
-            role: 'user',
-            parts: [{ text: message || "" }]
-          });
-          success = await executeGenerate(contentsPayload);
-        } catch (historyErr) {
-          console.warn("[Server] History payload build failed:", historyErr);
-        }
-      }
-
-      if (!success) {
-        const fallbackPayload = [
-          {
-            role: 'user',
-            parts: [{ text: message || "" }]
-          }
-        ];
-        success = await executeGenerate(fallbackPayload);
-      }
-
-      if (success && responseText) {
-        return res.status(200).json({
-          success: true,
-          response: responseText,
-          reply: responseText,
-          sources: sources,
-          isStub: false
-        });
-      }
-
-      throw new Error("Empty response from Gemini model.");
-
-    } catch (error: any) {
-      console.error('[chat] error:', error?.message || error);
       return res.status(200).json({
         success: true,
-        response: "I'm having trouble connecting to Gemini right now — please try again in a moment.",
-        reply: "I'm having trouble connecting to Gemini right now — please try again in a moment.",
+        response: reply,
+        reply: reply,
+        sources: sources,
+        isStub: false
+      });
+
+    } catch (error: any) {
+      console.error('[chat] Gemini error:', error?.message || error);
+      return res.status(200).json({
+        success: true,
+        response: "I'm having trouble connecting right now — please try again in a moment.",
+        reply: "I'm having trouble connecting right now — please try again in a moment.",
         sources: [],
         isStub: true
       });

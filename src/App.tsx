@@ -202,7 +202,7 @@ export default function App() {
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition flex items-center gap-1.5 cursor-pointer ${currentScreen === 'chat' ? 'bg-[#3a5a40] text-white shadow-xs' : 'text-[#8a8a7a] hover:text-[#2d332d]'}`}
             >
               <MessageSquare className="w-3.5 h-3.5" />
-              💬 Ask NagarMitra
+              Ask NagarMitra
             </button>
 
             <button
@@ -318,6 +318,9 @@ export default function App() {
                   onUpdateStatus={handleUpdateStatus}
                   onUpdateWitness={handleUpdateWitness}
                   onUpdateReasoning={handleUpdateReasoning}
+                  onUpdateReport={(updatedReport) => {
+                    setReports(prev => prev.map(r => r.id === updatedReport.id ? updatedReport : r));
+                  }}
                 />
               )}
 

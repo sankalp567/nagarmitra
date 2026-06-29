@@ -1,4 +1,4 @@
-export type IssueStatus = 'open' | 'acknowledged' | 'escalated' | 'resolved';
+export type IssueStatus = 'open' | 'acknowledged' | 'escalated' | 'resolved' | 'confirmed-resolved' | 'disputed' | 'Disputed';
 
 export interface ActionTimelineEntry {
   action: string;
