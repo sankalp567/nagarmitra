@@ -83,7 +83,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
     severity: 4,
     aiAnalysis: {
       description: "Severe road deterioration and deep potholes creating hazardous driving conditions near the sector main intersection.",
-      hazards: ["Vehicle damage risk", "Two-wheeler skidding hazard", "Traffic traffic bottleneck"],
+      hazards: ["Vehicle damage risk", "Two-wheeler skidding hazard", "Traffic bottleneck"],
       confidence: 0.94
     },
     department: "GMC Roads & Engineering Division",
@@ -93,7 +93,7 @@ export const INITIAL_REPORTS: CivicReport[] = [
     status: "open",
     createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000, // 3 days ago
     lastEscalatedAt: null,
-    coWitnesses: ["sankalpturankar567@gmail.com", "gandhinagar_resident_12@gmail.com"],
+    coWitnesses: ["citizen-witness@nagarmitra.demo", "gandhinagar_resident_12@gmail.com"],
     embedding: [0.1, -0.2, 0.45],
     duplicateOf: null,
     note: "Potholes are very deep. Already saw a scooter slide today morning."

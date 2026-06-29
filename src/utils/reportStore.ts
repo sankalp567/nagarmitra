@@ -390,7 +390,7 @@ export async function updateReportReasoning(
     saveLocalReports(local);
   }
 
-  if (!db || reportId.startsWith('rep_')) {
+  if (!db || reportId.startsWith('rep_local_')) {
     return index !== -1;
   }
 
@@ -450,7 +450,7 @@ export async function citizenEscalateReport(
   const local = getLocalReports();
   const index = local.findIndex(r => r.id === reportId);
   if (index !== -1) {
-    local[index].status = 'Disputed' as IssueStatus;
+    local[index].status = 'disputed' as IssueStatus;
     local[index].escalationTier = nextTier;
     local[index].officer = nextOfficer;
     if (!local[index].actionTimeline) {
@@ -468,7 +468,7 @@ export async function citizenEscalateReport(
     const docRef = doc(db, 'reports', reportId);
     try {
       await updateDoc(docRef, {
-        status: 'Disputed',
+        status: 'disputed',
         escalationTier: nextTier,
         officer: nextOfficer,
         actionTimeline: arrayUnion(timelineEntry)

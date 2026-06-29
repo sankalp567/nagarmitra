@@ -3,10 +3,11 @@ import { motion } from 'motion/react';
 import { 
   FileText, CheckCircle2, Percent, Clock, AlertTriangle, 
   TrendingUp, MapPin, Sparkles, Activity, ShieldAlert,
-  Loader2, AlertCircle
+  Loader2, AlertCircle, Award, History
 } from 'lucide-react';
 import { CivicReport, GANDHINAGAR_WARDS, CATEGORIES } from '../types';
 import { runEscalationWatchdog, resetWatchdogDemoState } from '../utils/reportStore';
+import { getCivicScore, getContributions, getCivicTierInfo } from '../utils/civicScore';
 
 // Global in-memory cache to persist bulletins across tab switching (component unmount/remount)
 const bulletinMemoryCache: Record<string, string> = {};
@@ -58,6 +59,21 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
   const [selectedNotice, setSelectedNotice] = useState<CivicReport | null>(null);
   const [activeDocTab, setActiveDocTab] = useState<string>('primary');
   const [copied, setCopied] = useState<boolean>(false);
+
+  const [civicPoints, setCivicPoints] = useState<number>(0);
+  const [contributions, setContributions] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    const updateScore = () => {
+      setCivicPoints(getCivicScore());
+      setContributions(getContributions());
+    };
+    updateScore();
+    window.addEventListener('nagarmitra_civic_score_updated', updateScore);
+    return () => {
+      window.removeEventListener('nagarmitra_civic_score_updated', updateScore);
+    };
+  }, []);
 
   React.useEffect(() => {
     localStorage.setItem('simulatedOffsetDays', String(simulatedOffsetDays));
@@ -879,6 +895,115 @@ export default function Dashboard({ reports, onSelectReport, onRefreshReports }:
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Community Contributors & Civic Score Panel */}
+      <div id="community-contributors-panel" className="bg-white border border-[#e2e2d5] rounded-3xl p-6 mb-8 animate-fadeIn">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#e2e2d5] pb-4 mb-5">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-[#3a5a40]/10 text-[#3a5a40] rounded-lg">
+              <Award className="w-5 h-5 text-[#3a5a40]" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-[#1a2e1d] uppercase tracking-wider font-sans">
+                Community Contribution & Civic Score
+              </h2>
+              <p className="text-[11px] text-[#8a8a7a] mt-0.5 font-medium">
+                Tracking citizen participation and engagement in maintaining Ward infrastructure across Gandhinagar.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-center">
+            <span className="bg-[#3a5a40]/10 border border-[#3a5a40]/20 text-[#3a5a40] text-[9px] font-mono font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
+              Score: {civicPoints} Pts
+            </span>
+            {getCivicTierInfo(civicPoints).isGold ? (
+              <span className="bg-[#fffbf0] border border-[#b37d14]/35 text-[#b37d14] text-[9px] font-sans font-bold px-2.5 py-1 rounded-full uppercase tracking-wider animate-pulse">
+                {getCivicTierInfo(civicPoints).name}
+              </span>
+            ) : (
+              <span className="bg-[#fafaf5] border border-[#e2e2d5] text-[#8a8a7a] text-[9px] font-sans font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
+                {getCivicTierInfo(civicPoints).name}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Score & Breakdown Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Main Score Display Box */}
+          <div className="bg-[#fafaf5] border border-[#e2e2d5] p-5 rounded-2xl flex flex-col justify-between shadow-3xs md:col-span-1">
+            <div>
+              <span className="text-[10px] uppercase font-black text-[#1a2e1d] tracking-wider font-sans block mb-1">
+                Active Session Score
+              </span>
+              {/* Tier name in a small muted label above the score number */}
+              <div className="text-[11px] font-medium text-[#8a8a7a]">
+                {getCivicTierInfo(civicPoints).name}
+              </div>
+              <div className="text-3xl font-extrabold text-[#3a5a40] mt-1">{civicPoints} Points</div>
+              <p className="text-[10px] text-[#8a8a7a] mt-1.5 leading-relaxed">
+                Points are earned by submitting reports (+1), co-signing existing complaints (+2), or escalating unresolved issues to Executive Engineer (+3).
+              </p>
+            </div>
+            {getCivicTierInfo(civicPoints).isGold && (
+              <div className="mt-4 pt-3 border-t border-[#e2e2d5] text-[10px] font-extrabold text-[#b37d14] uppercase tracking-wider">
+                Rank: {getCivicTierInfo(civicPoints).name} Medal Awarded
+              </div>
+            )}
+          </div>
+
+          {/* Recent Contributions Breakdown */}
+          <div className="md:col-span-2 space-y-3">
+            <div className="flex items-center gap-1.5 mb-1">
+              <History className="w-4 h-4 text-[#8a8a7a]" />
+              <span className="text-[10px] uppercase font-black text-[#1a2e1d] tracking-wider font-sans">
+                Recent Contributions Breakdown
+              </span>
+            </div>
+            
+            {contributions.length === 0 ? (
+              <div className="text-center py-6 border border-dashed border-[#e2e2d5] rounded-2xl bg-[#fafaf5]/40 text-xs text-[#8a8a7a] font-medium font-sans">
+                No contributions recorded in this session yet. Submit a grievance or co-sign a ticket to begin.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {contributions.slice(0, 3).map((contrib, idx) => {
+                  let typeLabel = "Report Filed";
+                  let typeColor = "text-[#3a5a40] bg-[#f0f9f0] border-[#d5edd5]";
+                  if (contrib.type === 'cowitness') {
+                    typeLabel = "Co-Witness Co-Sign";
+                    typeColor = "text-[#4285F4] bg-[#4285F4]/5 border-[#4285F4]/15";
+                  } else if (contrib.type === 'escalation') {
+                    typeLabel = "Tier-1 Escalation";
+                    typeColor = "text-[#c25953] bg-[#fff5f5] border-[#ffd5d5]";
+                  }
+
+                  return (
+                    <div key={idx} className="flex items-center justify-between p-3 border border-[#e2e2d5] rounded-xl bg-white hover:bg-[#fafaf5] transition shadow-3xs">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-[9px] font-extrabold uppercase font-mono px-2 py-0.5 rounded-md border ${typeColor}`}>
+                          {typeLabel}
+                        </span>
+                        <div>
+                          <div className="text-xs font-bold text-[#1a2e1d]">
+                            Ticket ID: <span className="font-mono">{contrib.ticketId}</span>
+                          </div>
+                          <div className="text-[9px] text-[#8a8a7a] font-medium mt-0.5">
+                            {new Date(contrib.timestamp).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-xs font-extrabold text-[#3a5a40] font-mono">
+                        +{contrib.points} Pts
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

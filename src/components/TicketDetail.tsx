@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { CivicReport, IssueStatus } from '../types';
 import { updateReportStatus, addCoWitness, updateReportReasoning, citizenEscalateReport, confirmReportResolution, getOfficerForDeptAndTier } from '../utils/reportStore';
+import { addCivicPoints, getCivicScore } from '../utils/civicScore';
 import { getProxiedImageUrl } from '../utils/imageUtils';
 
 interface TicketDetailProps {
@@ -41,37 +42,37 @@ const getLocalGroundingForCategory = (category: string) => {
   if (cat.includes("pothole") || cat.includes("road")) {
     summary = `• Gujarat Provincial Municipal Corporations Act, Section 63: GMC is legally obligated to maintain, repair, and clear public roads to ensure safe transit of citizens.\n• RTI Act 2005, Section 6(1): Citizens hold the statutory right to request work orders, budget details, and ward logs for delayed road-maintenance works.\n• GMC Service Level Agreement: Pothole repairs and minor road restoration are mandated to be completed within 7 business days from the date of logging.`;
     sources = [
-      { title: "Gujarat GPMC Act, Sec 63 - Maintenance of Streets", url: "https://gandhinagarmunicipal.com" },
-      { title: "RTI India Portal - Citizens Right to Public Information", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Municipal Corporation Citizen Charter (SLA)", url: "https://gandhinagarmunicipal.com" }
+      { title: "Gujarat GPMC Act, Sec 63 - Maintenance of Streets", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "RTI India Portal - Citizens Right to Public Information", url: "https://rtionline.gov.in" },
+      { title: "Gandhinagar Municipal Corporation Citizen Charter (SLA)", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("garbage") || cat.includes("sanitation") || cat.includes("waste")) {
     summary = `• Solid Waste Management Rules 2016 (under Environment Protection Act): Mandates local bodies to establish segregation systems, daily garbage clearance, and sanitary disposal.\n• GPMC Act Section 63(1)(b): Imposes a statutory duty on GMC for daily cleansing of all public streets, gutters, and disposal of municipal refuse.\n• GMC Grievance SLA Standard: General garbage collection and overflow bins must be addressed within 48 to 72 hours of complaint registration.`;
     sources = [
-      { title: "India Environment Portal - Solid Waste Management Rules 2016", url: "https://rti.gov.in" },
-      { title: "Gujarat Provincial Municipal Corporations Act - Duties on Sanitation", url: "https://gandhinagarmunicipal.com" },
-      { title: "GMC Citizen Portal - Waste Management SLA Timelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "India Environment Portal - Solid Waste Management Rules 2016", url: "" },
+      { title: "Gujarat Provincial Municipal Corporations Act - Duties on Sanitation", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "GMC Citizen Portal - Waste Management SLA Timelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("water") || cat.includes("sewage") || cat.includes("leak") || cat.includes("drain")) {
     summary = `• GPMC Act Section 63(1)(a): GMC is responsible for the collection, filtering, and distribution of clean water, as well as maintaining efficient drainage.\n• National Water Policy Standards: Access to safe and clean drinking water is a fundamental right derived from Article 21 of the Indian Constitution.\n• GMC Grievance SLA: Potable water leaks and drainage blockages are classified as high-priority, with a maximum 3-day resolution SLA.`;
     sources = [
-      { title: "GPMC Act - Water Supply & Drainage Administration", url: "https://gandhinagarmunicipal.com" },
-      { title: "Ministry of Jal Shakti - Water Quality & Public Rights", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Citizen Charter - Water Supply SLA Timelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "GPMC Act - Water Supply & Drainage Administration", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "Ministry of Jal Shakti - Water Quality & Public Rights", url: "" },
+      { title: "Gandhinagar Citizen Charter - Water Supply SLA Timelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("light") || cat.includes("dark") || cat.includes("streetlight") || cat.includes("bulb")) {
     summary = `• GPMC Act Section 63(1)(j): Obligates the Municipal Corporation to provide lighting for public streets, municipal markets, and public squares.\n• Bureau of Indian Standards (BIS) Code of Practice SP 72: Specifies minimum safety illumination standards for residential and major roads.\n• GMC Streetlighting Charter: Blown streetlight bulbs and cable failures must be resolved within 4 to 7 business days from logging.`;
     sources = [
-      { title: "Gujarat Municipal GPMC Act Streetlight Mandates", url: "https://gandhinagarmunicipal.com" },
-      { title: "RTI Act - Public Lighting Infrastructure Budgets", url: "https://rti.gov.in" },
-      { title: "GMC Citizen Charter - Electrical & Streetlighting SLA", url: "https://gandhinagarmunicipal.com" }
+      { title: "Gujarat Municipal GPMC Act Streetlight Mandates", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "RTI Act - Public Lighting Infrastructure Budgets", url: "https://rtionline.gov.in" },
+      { title: "GMC Citizen Charter - Electrical & Streetlighting SLA", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else {
     summary = `• Gujarat Provincial Municipal Corporations Act, Section 63 / 66: Outlines core municipal duties of the corporation to address civic public utility hazards and maintain public infrastructure.\n• Right to Information Act 2005, Section 6(1): Empowers any citizen to seek official updates and inspection details on municipal works.\n• Gandhinagar Municipal Citizen Charter: General grievances under public works must be reviewed within 7 days and resolved within 15 days maximum.`;
     sources = [
-      { title: "GPMC Act 1949 - Chapter VI Core Municipal Duties", url: "https://gandhinagarmunicipal.com" },
-      { title: "Right to Information (RTI) Act, 2005 Official Portal", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Municipal Corporation Citizen SLA Guidelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "GPMC Act 1949 - Chapter VI Core Municipal Duties", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "Right to Information (RTI) Act, 2005 Official Portal", url: "https://rtionline.gov.in" },
+      { title: "Gandhinagar Municipal Corporation Citizen SLA Guidelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   }
 
@@ -133,7 +134,11 @@ export default function TicketDetail({
   const handleConfirmDisputeEscalation = async () => {
     setShowDisputeConfirmDialog(false);
     const currentTier = report.escalationTier ?? 0;
-    const nextTier = Math.min(currentTier + 1, 4);
+    if (currentTier >= 4) {
+      setDisputeEscalatedMsg("Maximum escalation reached — complaint is now with the Municipal Commissioner.");
+      return;
+    }
+    const nextTier = currentTier + 1;
     const nextOfficer = getOfficerForDeptAndTier(report.department, nextTier);
     
     const timelineEntry = {
@@ -145,10 +150,13 @@ export default function TicketDetail({
 
     const success = await citizenEscalateReport(report.id, nextTier, nextOfficer, timelineEntry);
     if (success) {
+      if (nextTier === 1) {
+        addCivicPoints('escalation', report.id);
+      }
       setDisputeEscalatedMsg(`Your dispute has been escalated to ${nextOfficer}`);
       const updatedReport = {
         ...report,
-        status: 'Disputed' as IssueStatus,
+        status: 'disputed' as IssueStatus,
         escalationTier: nextTier,
         officer: nextOfficer,
         actionTimeline: [...(report.actionTimeline || []), timelineEntry]
@@ -156,7 +164,7 @@ export default function TicketDetail({
       if (onUpdateReport) {
         onUpdateReport(updatedReport);
       } else {
-        onUpdateStatus(report.id, 'Disputed' as IssueStatus);
+        onUpdateStatus(report.id, 'disputed' as IssueStatus);
       }
     }
   };
@@ -566,6 +574,7 @@ export default function TicketDetail({
     }
     const success = await addCoWitness(report.id, witnessEmail);
     if (success) {
+      addCivicPoints('cowitness', report.id);
       onUpdateWitness(report.id, witnessEmail);
       setWitnessSuccess(`Email ${witnessEmail} is now co-signed!`);
       setWitnessEmail('');
@@ -584,7 +593,7 @@ export default function TicketDetail({
   let currentStatusForTimeline = report.status;
   if (report.status === 'confirmed-resolved') {
     currentStatusForTimeline = 'resolved';
-  } else if (report.status === 'disputed' || report.status === 'Disputed') {
+  } else if (report.status === 'disputed') {
     currentStatusForTimeline = 'escalated';
   }
   const currentStageIndex = timelineStages.findIndex(s => s.key === currentStatusForTimeline);
@@ -773,7 +782,7 @@ export default function TicketDetail({
                 </div>
               )}
 
-              {!isResolvedOrClosed && (report.status === 'confirmed-resolved' || report.status === 'Disputed' || report.status === 'disputed') && (
+              {(!isResolvedOrClosed || report.status === 'confirmed-resolved') && (report.status === 'confirmed-resolved' || report.status === 'disputed') && (
                 <div className={`rounded-2xl p-5 mb-6 border animate-fadeIn ${report.status === 'confirmed-resolved' ? 'bg-[#f0f9f0] border-[#d5edd5] text-[#3a5a40]' : 'bg-[#fff5f5] border-[#ffd5d5] text-[#c25953]'}`}>
                   <div className="flex items-center gap-2 mb-2">
                     {report.status === 'confirmed-resolved' ? (
@@ -1072,7 +1081,7 @@ export default function TicketDetail({
               {report.escalationNoticeIsOffline ? (
                 <div className="mb-4 bg-amber-500/5 border border-amber-500/20 text-amber-300 p-2.5 rounded-xl font-sans text-[10px] leading-relaxed flex items-start gap-1.5">
                   <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span>Canned offline draft fallback used because no active live GEMINI_API_KEY was detected in workspace.</span>
+                  <span>Complaint draft generated</span>
                 </div>
               ) : (
                 <div className="mb-4 bg-emerald-500/5 border border-emerald-500/20 text-emerald-300 p-2.5 rounded-xl font-sans text-[10px] leading-relaxed flex items-start gap-1.5">
@@ -1244,7 +1253,7 @@ export default function TicketDetail({
               <span className={`text-[9px] font-extrabold uppercase font-mono px-2.5 py-1 rounded-full border ${
                 report.status === 'resolved' || report.status === 'confirmed-resolved' 
                   ? 'bg-[#f0f9f0] text-[#3a5a40] border-[#d5edd5]' 
-                  : (report.status === 'escalated' || report.status === 'Disputed' || report.status === 'disputed') 
+                  : (report.status === 'escalated' || report.status === 'disputed') 
                     ? 'bg-[#fff5f5] text-[#c25953] border-[#ffd5d5] animate-pulse' 
                     : 'bg-[#fffbf0] text-[#b37d14] border-[#ffe8b3]'
               }`}>

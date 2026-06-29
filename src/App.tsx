@@ -3,11 +3,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Map, BarChart3, HelpCircle, FileText, 
   Sparkles, ShieldCheck, Database, Loader2, AlertCircle,
-  MessageSquare
+  MessageSquare, Shield
 } from 'lucide-react';
 import { ensureAnonymousAuth } from './firebase';
 import { fetchReports } from './utils/reportStore';
 import { CivicReport, IssueStatus } from './types';
+import { getCivicScore, getCivicTierInfo } from './utils/civicScore';
 
 // Importing custom components
 import ReportIssue from './components/ReportIssue';
@@ -25,6 +26,18 @@ export default function App() {
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<string>('Connecting...');
   const [previousView, setPreviousView] = useState<Screen | null>(null);
+  const [civicPoints, setCivicPoints] = useState<number>(0);
+
+  useEffect(() => {
+    const updateScore = () => {
+      setCivicPoints(getCivicScore());
+    };
+    updateScore();
+    window.addEventListener('nagarmitra_civic_score_updated', updateScore);
+    return () => {
+      window.removeEventListener('nagarmitra_civic_score_updated', updateScore);
+    };
+  }, [currentScreen]);
 
   // Centralized navigation function to handle state updates and pushState
   const navigateTo = (screen: Screen, reportId: string | null = null, pushHistory = true) => {
@@ -216,6 +229,20 @@ export default function App() {
 
           {/* Authentication & platform status badges */}
           <div className="flex items-center gap-3">
+            {/* Civic Score Indicator */}
+            <div id="nav-civic-score-indicator" className="flex items-center gap-1.5 text-xs text-[#8a8a7a] select-none font-sans">
+              <Shield className="w-3.5 h-3.5 text-[#8a8a7a] flex-shrink-0" />
+              <span>
+                <span className={getCivicTierInfo(civicPoints).isGold ? "text-[#b37d14] font-medium" : ""}>
+                  {getCivicTierInfo(civicPoints).name}
+                </span>
+                {" "}· {civicPoints} pts
+              </span>
+            </div>
+
+            {/* Faint vertical divider */}
+            <div className="h-4 w-px bg-[#e2e2d5]" />
+
             <div className="text-[10px] font-mono bg-[#fafaf5] border border-[#e2e2d5] px-2.5 py-1 rounded-lg text-[#8a8a7a] flex items-center gap-1.5 max-w-xs truncate">
               <ShieldCheck className="w-3.5 h-3.5 text-[#5a7a5a] flex-shrink-0" />
               <span className="truncate hidden md:inline">{authStatus}</span>
@@ -328,7 +355,7 @@ export default function App() {
                 <div className="p-8 max-w-sm mx-auto text-center">
                   <AlertCircle className="w-8 h-8 text-rose-500 mx-auto mb-2 animate-bounce" />
                   <h4 className="font-bold text-[#2d332d]">Ticket Missing or Deleted</h4>
-                  <p className="text-xs text-[#8a8a7a] mt-1">This report doesn't exist in local compliance caches. Return and choose another grid.</p>
+                  <p className="text-xs text-[#8a8a7a] mt-1">This report doesn't exist in local data. Return and choose another grid.</p>
                   <button 
                     onClick={() => navigateTo('report')}
                     className="mt-4 px-4 py-2 bg-[#3a5a40] text-white rounded-lg text-xs font-semibold"

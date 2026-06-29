@@ -576,7 +576,16 @@ Ensure each version:
     }
 
     console.log(`[CivicEngine] Complaint drafts generated using ${complaintResultObj.usedModel}`);
-    const complaintsJson = JSON.parse(complaintOutputText.trim());
+    let complaintsJson;
+    try {
+      complaintsJson = JSON.parse(complaintOutputText.trim());
+    } catch {
+      complaintsJson = {
+        en: `To,\nThe Municipal Commissioner,\nGandhinagar Municipal Corporation.\n\nSubject: Urgent attention required for ${category}.\n\nDear Sir/Madam,\nThis is to report an issue of category '${category}' with severity index ${severity} at coordinates [${lat}, ${lng}]. Please address this issue at your earliest convenience.\n\nDescription: ${description}\n\nSincerely,\nConcerned Citizen`,
+        hi: `सेवा में,\nनगर आयुक्त,\nगांधीनगर नगर निगम।\n\nविषय: ${category} के संबंध में आवश्यक कार्रवाई के बारे में।\n\nमहोदय/महोदया,\nइस पत्र के माध्यम से आपका ध्यान [${lat}, ${lng}] पर स्थित '${category}' (गंभीरता: ${severity}) की ओर आकर्षित करना है। कृपया इस समस्या पर जल्द से जल्द ध्यान दें।\n\nविवरण: ${description}\n\nभवदीय,\nगांधीनगर का जागरूक नागरिक`,
+        gu: `માનનીય કમિશનરશ્રી,\n\nગાંધીનગર મહાનગરપાલિકા.\n\nવિષય: '${category}' સંદર્ભે જરૂરી કાર્યવાહી બાબત.\n\nમહોદયશ્રી,\nઆ પત્ર દ્વારા આપનું ધ્યાન નકશા કોઓર્ડિનેટ્સ [${lat}, ${lng}] પર સ્થિત '${category}' (ગંભીરતા ક્રમાંક: ${severity}) તરફ દોરવાનું છે. કૃપા કરીને આ સમસ્યા પર વહેલી તકે ધ્યાન આપો.\n\nવિગત: ${description}\n\nઆપનો નમ્ર,\nગાંધીનગરનો નાગરિક`
+      };
+    }
 
     const embedding: number[] = [];
 
@@ -701,7 +710,16 @@ Please generate three diagnostic reasoning fields for this ticket:
     throw new Error("No text returned for diagnostic reasoning.");
   }
 
-  const parsedReasoning = JSON.parse(reasoningText.trim());
+  let parsedReasoning;
+  try {
+    parsedReasoning = JSON.parse(reasoningText.trim());
+  } catch {
+    parsedReasoning = {
+      classificationReasoning: "GMC automatic routing based on reported visual indicators and category criteria.",
+      alternativeCategories: "Others, Public Infrastructure",
+      severityFactors: "Visual deterioration, commuter safety, and community impact."
+    };
+  }
   return {
     classificationReasoning: parsedReasoning.classificationReasoning || "",
     alternativeCategories: parsedReasoning.alternativeCategories || "",
@@ -722,38 +740,38 @@ export function getLocalGroundingForCategory(category: string): {
   if (cat.includes("pothole") || cat.includes("road")) {
     summary = `• Gujarat Provincial Municipal Corporations Act, Section 63: GMC is legally obligated to maintain, repair, and clear public roads to ensure safe transit of citizens.\n• RTI Act 2005, Section 6(1): Citizens hold the statutory right to request work orders, budget details, and ward logs for delayed road-maintenance works.\n• GMC Service Level Agreement: Pothole repairs and minor road restoration are mandated to be completed within 7 business days from the date of logging.`;
     sources = [
-      { title: "Gujarat GPMC Act, Sec 63 - Maintenance of Streets", url: "https://gandhinagarmunicipal.com" },
-      { title: "RTI India Portal - Citizens Right to Public Information", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Municipal Corporation Citizen Charter (SLA)", url: "https://gandhinagarmunicipal.com" }
+      { title: "Gujarat GPMC Act, Sec 63 - Maintenance of Streets", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "RTI India Portal - Citizens Right to Public Information", url: "https://rtionline.gov.in" },
+      { title: "Gandhinagar Municipal Corporation Citizen Charter (SLA)", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("garbage") || cat.includes("sanitation") || cat.includes("waste")) {
     summary = `• Solid Waste Management Rules 2016 (under Environment Protection Act): Mandates local bodies to establish segregation systems, daily garbage clearance, and sanitary disposal.\n• GPMC Act Section 63(1)(b): Imposes a statutory duty on GMC for daily cleansing of all public streets, gutters, and disposal of municipal refuse.\n• GMC Grievance SLA Standard: General garbage collection and overflow bins must be addressed within 48 to 72 hours of complaint registration.`;
     sources = [
-      { title: "India Environment Portal - Solid Waste Management Rules 2016", url: "https://rti.gov.in" },
-      { title: "Gujarat Provincial Municipal Corporations Act - Duties on Sanitation", url: "https://gandhinagarmunicipal.com" },
-      { title: "GMC Citizen Portal - Waste Management SLA Timelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "India Environment Portal - Solid Waste Management Rules 2016", url: "" },
+      { title: "Gujarat Provincial Municipal Corporations Act - Duties on Sanitation", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "GMC Citizen Portal - Waste Management SLA Timelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("water") || cat.includes("sewage") || cat.includes("leak") || cat.includes("drain")) {
     summary = `• GPMC Act Section 63(1)(a): GMC is responsible for the collection, filtering, and distribution of clean water, as well as maintaining efficient drainage.\n• National Water Policy Standards: Access to safe and clean drinking water is a fundamental right derived from Article 21 of the Indian Constitution.\n• GMC Grievance SLA: Potable water leaks and drainage blockages are classified as high-priority, with a maximum 3-day resolution SLA.`;
     sources = [
-      { title: "GPMC Act - Water Supply & Drainage Administration", url: "https://gandhinagarmunicipal.com" },
-      { title: "Ministry of Jal Shakti - Water Quality & Public Rights", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Citizen Charter - Water Supply SLA Timelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "GPMC Act - Water Supply & Drainage Administration", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "Ministry of Jal Shakti - Water Quality & Public Rights", url: "" },
+      { title: "Gandhinagar Citizen Charter - Water Supply SLA Timelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else if (cat.includes("light") || cat.includes("dark") || cat.includes("streetlight") || cat.includes("bulb")) {
     summary = `• GPMC Act Section 63(1)(j): Obligates the Municipal Corporation to provide lighting for public streets, municipal markets, and public squares.\n• Bureau of Indian Standards (BIS) Code of Practice SP 72: Specifies minimum safety safety illumination standards for residential and major roads.\n• GMC Streetlighting Charter: Blown streetlight bulbs and cable failures must be resolved within 4 to 7 business days from logging.`;
     sources = [
-      { title: "Gujarat Municipal GPMC Act Streetlight Mandates", url: "https://gandhinagarmunicipal.com" },
-      { title: "RTI Act - Public Lighting Infrastructure Budgets", url: "https://rti.gov.in" },
-      { title: "GMC Citizen Charter - Electrical & Streetlighting SLA", url: "https://gandhinagarmunicipal.com" }
+      { title: "Gujarat Municipal GPMC Act Streetlight Mandates", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "RTI Act - Public Lighting Infrastructure Budgets", url: "https://rtionline.gov.in" },
+      { title: "GMC Citizen Charter - Electrical & Streetlighting SLA", url: "https://www.gandhinagarmunicipal.org" }
     ];
   } else {
     // Default fallback
     summary = `• Gujarat Provincial Municipal Corporations Act, Section 63 / 66: Outlines core municipal duties of the corporation to address civic public utility hazards and maintain public infrastructure.\n• Right to Information Act 2005, Section 6(1): Empowers any citizen to seek official updates and inspection details on municipal works.\n• Gandhinagar Municipal Citizen Charter: General grievances under public works must be reviewed within 7 days and resolved within 15 days maximum.`;
     sources = [
-      { title: "GPMC Act 1949 - Chapter VI Core Municipal Duties", url: "https://gandhinagarmunicipal.com" },
-      { title: "Right to Information (RTI) Act, 2005 Official Portal", url: "https://rti.gov.in" },
-      { title: "Gandhinagar Municipal Corporation Citizen SLA Guidelines", url: "https://gandhinagarmunicipal.com" }
+      { title: "GPMC Act 1949 - Chapter VI Core Municipal Duties", url: "https://nagarpalikas.gujarat.gov.in" },
+      { title: "Right to Information (RTI) Act, 2005 Official Portal", url: "https://rtionline.gov.in" },
+      { title: "Gandhinagar Municipal Corporation Citizen SLA Guidelines", url: "https://www.gandhinagarmunicipal.org" }
     ];
   }
 

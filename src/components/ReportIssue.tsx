@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Camera, Upload, MapPin, AlertCircle, CheckCircle2, Loader2, Sparkles, Navigation, ChevronRight, CornerDownRight, ChevronDown, ChevronUp, HelpCircle, Mic, Square, AlertTriangle } from 'lucide-react';
 import { createReport, getLocalReports, saveLocalReports, fetchReports, addCoWitness, updateReportReasoning } from '../utils/reportStore';
+import { addCivicPoints, getCivicScore, getCivicTierInfo, getWardImpactInfo, getMilestoneText, getJustUnlockedMilestone, getContributions } from '../utils/civicScore';
 import { getProxiedImageUrl } from '../utils/imageUtils';
 import { getSvgDataUriForCategory } from '../data/mockData';
 import { uploadPhotoToStorage, compressImage, auth, db } from '../firebase';
@@ -68,6 +69,7 @@ export default function ReportIssue({ onReportCreated, onNavigateToDetail }: Rep
   const [duplicateMessage, setDuplicateMessage] = useState<string>('');
   const [isWhyClassificationOpen, setIsWhyClassificationOpen] = useState<boolean>(false);
   const [howItWorksExpanded, setHowItWorksExpanded] = useState<boolean>(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   // New states for geographic boundary checking
   const [showBoundaryAlert, setShowBoundaryAlert] = useState<boolean>(false);
@@ -483,7 +485,11 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
   // Submission Pipeline trigger
   const handleSubmitReport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!photoUrl && !note.trim()) return;
+    setValidationError(null);
+    if (!photoUrl && !note.trim()) {
+      setValidationError("At least one of: a valid photo OR a non-empty note is required to submit your complaint.");
+      return;
+    }
 
     setIsSubmitting(true);
     setResultReport(null);
@@ -666,6 +672,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
         const witnessEmail = "citizen_" + (auth?.currentUser?.uid?.substring(0, 6) || Math.floor(1000 + Math.random() * 9000)) + "@gandhinagar.org";
         
         await addCoWitness(duplicateTicket.id, witnessEmail);
+        addCivicPoints('cowitness', duplicateTicket.id);
         
         // Reload or fetch updated ticket from cache
         const updatedReports = getLocalReports();
@@ -767,6 +774,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
       } : s));
 
       // Complete and transition instantly
+      addCivicPoints('report', newlyCreatedReport.id, newlyCreatedReport.severity);
       setResultReport(newlyCreatedReport);
       onReportCreated(newlyCreatedReport);
     } catch (err: any) {
@@ -777,7 +785,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
         status: 'failed',
         duration: `${((Date.now() - (stepStartTimes.current[s.id] || Date.now())) / 1000).toFixed(1)}s`
       } : s));
-      setIsSubmitting(true);
+      setIsSubmitting(false);
     }
   };
 
@@ -793,6 +801,7 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
     setDuplicateFound(false);
     setDuplicateMessage('');
     setIsSubmitting(false);
+    setValidationError(null);
     setShowBoundaryAlert(false);
     setDetectedOffLimitsCoords(null);
     setSelectedDemoWard(null);
@@ -1305,10 +1314,16 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                 />
               </div>
 
+              {validationError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium rounded-xl flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{validationError}</span>
+                </div>
+              )}
+
               <button
                 type="submit"
                 id="submit-report-btn"
-                disabled={!photoUrl && !note.trim()}
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-[#3a5a40] hover:bg-[#2f4934] disabled:bg-[#fafaf5]/80 text-white disabled:text-[#8a8a7a] font-bold uppercase tracking-wider rounded-xl text-xs shadow-md transition duration-150 cursor-pointer disabled:cursor-not-allowed"
               >
                 Launch Municipal Reporting Agent
@@ -1415,6 +1430,62 @@ function getCosineSimilarity(vecA: number[], vecB: number[]): number {
                       <h4 className="text-[#1a2e1d] font-bold font-sans text-sm">Grievance Registered Successfully</h4>
                       <p className="text-[#5a7a5a] text-xs mt-1">Ticket ID: <span className="font-mono font-bold text-[#1a2e1d]">{resultReport.id}</span> assigned to {resultReport.department}.</p>
                     </>
+                  )}
+
+                  {/* Civic Contribution Score Card */}
+                  <div className="mt-4 p-4 bg-[#fbfbf8] border border-[#e2e2d5] rounded-xl text-center select-none font-sans">
+                    <div className="text-[10px] uppercase tracking-wider font-extrabold text-[#8a8a7a]">Nagarmitra Contribution Score</div>
+                    
+                    {/* Tier name in a small muted label above the score number */}
+                    <div className="text-[11px] font-medium text-[#8a8a7a] mt-1.5">
+                      {getCivicTierInfo(getCivicScore()).name}
+                    </div>
+
+                    <div className="flex items-center justify-center gap-2 mt-0.5">
+                      <span className="text-sm font-extrabold text-[#3a5a40]">{getCivicScore()} Points</span>
+                      {getCivicTierInfo(getCivicScore()).isGold && (
+                        <span className="px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider border border-[#b37d14] text-[#b37d14] bg-[#fffbf0] rounded-md">
+                          {getCivicTierInfo(getCivicScore()).name}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-[10px] font-medium text-[#5a7a5a] mt-1">
+                      {duplicateFound 
+                        ? "+2 Points added for registering as a Co-Witness" 
+                        : (
+                          <>
+                            +1 Point added for successful grievance filing
+                            {getContributions().find(c => c.ticketId === resultReport?.id && c.type === 'report')?.severityBonus ? (
+                              <div className="mt-1 font-semibold text-[#b37d14]">
+                                Severity bonus: +{getContributions().find(c => c.ticketId === resultReport?.id && c.type === 'report')?.severityBonus} pt (critical issue)
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                    </div>
+
+                    {/* First-Achievement Moments Callout */}
+                    {(() => {
+                      const justUnlocked = getJustUnlockedMilestone();
+                      if (justUnlocked && getMilestoneText(justUnlocked)) {
+                        return (
+                          <div style={{ borderLeft: '3px solid #8a8a7a', paddingLeft: '10px' }} className="mt-4 text-left select-none font-sans">
+                            <p className="text-[13px] text-[#8a8a7a] font-normal leading-relaxed">
+                              {getMilestoneText(justUnlocked)}
+                            </p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+
+                  {/* Resident Impact Statement below the Civic Score card */}
+                  {resultReport?.wardId && (
+                    <p className="text-[13px] text-[#8a8a7a] mt-2.5 text-center font-sans font-normal leading-relaxed select-none">
+                      Your report may affect approximately {getWardImpactInfo(resultReport.wardId).population} residents in {getWardImpactInfo(resultReport.wardId).name}.
+                    </p>
                   )}
 
 

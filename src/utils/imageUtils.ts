@@ -11,7 +11,7 @@ export function getProxiedImageUrl(url: string): string {
     url.startsWith("blob:") || 
     url.startsWith("/") || 
     url.startsWith("./") || 
-    url.startsWith("http://localhost:3000/")
+    url.startsWith(typeof window !== "undefined" ? window.location.origin + "/" : (process.env.PUBLIC_URL || "http://localhost:3000/"))
   ) {
     return url;
   }
