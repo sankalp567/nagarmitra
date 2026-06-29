@@ -14,7 +14,7 @@ An agentic civic issue resolver for the Gandhinagar Municipal Corporation. Citiz
 **Report Issue — Landing Page**  
 ![Report Issue Landing Page](docs/screenshots/01-report-issue-home.png)
 
-**Photo Upload with Gandhinagar Presets**  
+**Photo Upload**  
 ![Photo Upload with Presets](docs/screenshots/aaa.png))
 
 **Civic Map — Real Gandhinagar Streets, Severity-Colored Pins, Ward Overlays**  
